@@ -25,6 +25,8 @@ from app.virtual_envs.env_manager import create_python_env, install_requirements
 from app.python_versions.version_manager import PythonVersionManager
 # 导入项目管理模块
 from app.projects.project_manager import project_manager
+# 导入任务管理模块
+from app.tasks.task_manager import task_manager
 
 # 初始化Flask应用
 app = Flask(__name__)
@@ -954,6 +956,384 @@ def python_version_log_stream(version_id):
         yield 'data: [STREAM_END]\n\n'
     
     return Response(event_stream(), mimetype='text/event-stream')
+
+# 任务管理相关的路由
+@app.route('/api/tasks', methods=['GET'])
+def get_tasks():
+    """获取任务列表
+    
+    查询参数:
+        page: 页码，默认为1
+        per_page: 每页数量，默认为10
+        search: 搜索关键词
+        project_id: 项目ID过滤
+        python_env_id: Python虚拟环境ID过滤
+        is_active: 任务状态过滤
+        
+    返回:
+        JSON: 任务列表和分页信息
+    """
+    try:
+        # 获取查询参数
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        search = request.args.get('search', '')
+        project_id = request.args.get('project_id', type=int)
+        python_env_id = request.args.get('python_env_id', type=int)
+        is_active = request.args.get('is_active')
+        
+        # 处理布尔值参数
+        if is_active is not None:
+            is_active = is_active.lower() == 'true'
+        
+        # 调用任务管理模块获取任务列表
+        result = task_manager.get_tasks(
+            page=page, 
+            per_page=per_page, 
+            search=search,
+            project_id=project_id,
+            python_env_id=python_env_id,
+            is_active=is_active
+        )
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'获取任务列表失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务列表失败: {str(e)}'}), 500
+
+@app.route('/api/tasks', methods=['POST'])
+def create_task():
+    """创建新任务
+    
+    请求体:
+        name: 任务名称
+        description: 任务描述
+        project_id: 项目ID（可选）
+        python_env_id: Python虚拟环境ID
+        command: 执行命令
+        schedule_type: 调度类型 (immediate, interval, one-time, cron)
+        schedule_config: 调度配置（JSON字符串）
+        max_instances: 最大并发实例数
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 获取请求数据
+        data = request.json
+        
+        # 调用任务管理模块创建任务
+        result = task_manager.create_task(
+            name=data.get('name'),
+            description=data.get('description'),
+            project_id=data.get('project_id'),
+            python_env_id=data.get('python_env_id'),
+            command=data.get('command'),
+            schedule_type=data.get('schedule_type'),
+            schedule_config=data.get('schedule_config'),
+            max_instances=data.get('max_instances', 1)
+        )
+        
+        if result['success']:
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'创建任务失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'创建任务失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>', methods=['GET'])
+def get_task(task_id):
+    """获取任务详情
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 任务详情
+    """
+    try:
+        # 调用任务管理模块获取任务详情
+        result = task_manager.get_task(task_id)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'获取任务详情失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务详情失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id):
+    """更新任务信息
+    
+    参数:
+        task_id: 任务ID
+        
+    请求体:
+        name: 任务名称
+        description: 任务描述
+        project_id: 项目ID
+        python_env_id: Python虚拟环境ID
+        command: 执行命令
+        schedule_type: 调度类型
+        schedule_config: 调度配置
+        max_instances: 最大并发实例数
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 获取请求数据
+        data = request.json
+        
+        # 调用任务管理模块更新任务
+        result = task_manager.update_task(task_id, **data)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'更新任务失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'更新任务失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
+def delete_task(task_id):
+    """删除任务
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 调用任务管理模块删除任务
+        result = task_manager.delete_task(task_id)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'删除任务失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'删除任务失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/start', methods=['POST'])
+def start_task(task_id):
+    """启动任务调度
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 调用任务管理模块启动任务
+        result = task_manager.start_task(task_id)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'启动任务失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'启动任务失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/pause', methods=['POST'])
+def pause_task(task_id):
+    """暂停任务调度
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 调用任务管理模块暂停任务
+        result = task_manager.pause_task(task_id)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'暂停任务失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'暂停任务失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/executions', methods=['GET'])
+def get_task_executions(task_id):
+    """获取任务执行历史记录
+    
+    查询参数:
+        page: 页码，默认为1
+        per_page: 每页数量，默认为10
+        status: 执行状态过滤
+        
+    返回:
+        JSON: 执行历史记录
+    """
+    try:
+        # 获取查询参数
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        status = request.args.get('status')
+        
+        # 调用任务管理模块获取执行历史
+        result = task_manager.get_task_executions(
+            task_id=task_id, 
+            page=page, 
+            per_page=per_page,
+            status=status
+        )
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'获取任务执行历史失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务执行历史失败: {str(e)}'}), 500
+
+@app.route('/api/executions/<int:execution_id>/logs', methods=['GET'])
+def get_execution_logs(execution_id):
+    """获取任务执行日志
+    
+    查询参数:
+        page: 页码，默认为1
+        per_page: 每页数量，默认为50
+        level: 日志级别过滤
+        search: 关键词搜索
+        
+    返回:
+        JSON: 执行日志
+    """
+    try:
+        # 获取查询参数
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 50, type=int)
+        level = request.args.get('level')
+        search = request.args.get('search', '')
+        
+        # 调用任务管理模块获取执行日志
+        result = task_manager.get_task_logs(
+            execution_id=execution_id, 
+            page=page, 
+            per_page=per_page,
+            level=level,
+            search=search
+        )
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'获取任务执行日志失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务执行日志失败: {str(e)}'}), 500
+
+@app.route('/api/executions/<int:execution_id>/terminate', methods=['POST'])
+def terminate_execution(execution_id):
+    """强制终止任务执行
+    
+    参数:
+        execution_id: 执行实例ID
+        
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        # 调用任务管理模块强制终止任务
+        result = task_manager.terminate_task_execution(execution_id)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'强制终止任务执行失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'强制终止任务执行失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/running_instances', methods=['GET'])
+def get_running_instances(task_id):
+    """获取任务运行实例数
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 运行实例数量
+    """
+    try:
+        # 调用任务管理模块获取运行实例数
+        count = task_manager.get_running_instances_count(task_id)
+        
+        return jsonify({'success': True, 'count': count})
+    except Exception as e:
+        logger.error(f'获取任务运行实例数失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务运行实例数失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/stats', methods=['GET'])
+def get_task_stats(task_id):
+    """获取任务执行统计信息
+    
+    参数:
+        task_id: 任务ID
+        
+    返回:
+        JSON: 执行统计信息
+    """
+    try:
+        # 调用任务管理模块获取执行统计信息
+        stats = task_manager.get_task_execution_stats(task_id)
+        
+        return jsonify({'success': True, 'stats': stats})
+    except Exception as e:
+        logger.error(f'获取任务执行统计信息失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取任务执行统计信息失败: {str(e)}'}), 500
+
+@app.route('/api/tasks/<int:task_id>/executions/<int:execution_id>/realtime_logs', methods=['GET'])
+def get_realtime_logs(task_id, execution_id):
+    """获取实时日志
+    
+    参数:
+        task_id: 任务ID
+        execution_id: 执行实例ID
+        
+    查询参数:
+        last_timestamp: 上次获取日志的时间戳
+        limit: 返回日志数量上限
+        
+    返回:
+        JSON: 实时日志
+    """
+    try:
+        # 获取查询参数
+        last_timestamp = request.args.get('last_timestamp')
+        limit = request.args.get('limit', 100, type=int)
+        
+        # 调用任务管理模块获取实时日志
+        result = task_manager.get_realtime_logs(
+            task_id=task_id,
+            execution_id=execution_id,
+            last_timestamp=last_timestamp,
+            limit=limit
+        )
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logger.error(f'获取实时日志失败: {str(e)}')
+        return jsonify({'success': False, 'message': f'获取实时日志失败: {str(e)}'}), 500
 
 # 数据库连接管理
 @app.before_request

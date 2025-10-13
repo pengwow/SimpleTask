@@ -31,3 +31,6 @@ black
 
 # 类型检查
 mypy
+
+# 任务调度
+APScheduler

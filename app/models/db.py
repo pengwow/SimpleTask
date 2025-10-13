@@ -5,7 +5,7 @@
 """
 
 import os
-from peewee import SqliteDatabase, Model, CharField, TextField, DateTimeField, ForeignKeyField, BooleanField, CompositeKey
+from peewee import SqliteDatabase, Model, CharField, TextField, DateTimeField, ForeignKeyField, BooleanField, CompositeKey, IntegerField, FloatField
 from datetime import datetime
 
 # 获取当前文件所在目录
@@ -83,3 +83,33 @@ class ProjectToTag(BaseModel):
 
     class Meta:
         primary_key = CompositeKey('project', 'tag')
+
+class Task(BaseModel):
+    """任务模型"""
+    name = CharField(unique=True, max_length=100)
+    description = TextField(null=True)
+    project = ForeignKeyField(Project, backref='tasks', null=True)
+    python_env = ForeignKeyField(PythonEnv, backref='tasks')
+    command = TextField()
+    schedule_type = CharField(max_length=20)  # immediate, interval, one-time, cron
+    schedule_config = TextField()  # JSON格式的调度配置
+    max_instances = IntegerField(default=1)  # 最大并发实例数
+    is_active = BooleanField(default=False)
+    create_time = DateTimeField(default=datetime.now)
+    update_time = DateTimeField(default=datetime.now)
+
+class TaskExecution(BaseModel):
+    """任务执行记录模型"""
+    task = ForeignKeyField(Task, backref='executions')
+    start_time = DateTimeField(default=datetime.now)
+    end_time = DateTimeField(null=True)
+    status = CharField(max_length=20)  # running, completed, failed
+    duration = FloatField(null=True)  # 执行耗时（秒）
+    error_message = TextField(null=True)
+
+class TaskLog(BaseModel):
+    """任务执行日志模型"""
+    execution = ForeignKeyField(TaskExecution, backref='logs')
+    level = CharField(max_length=10, default='INFO')
+    message = TextField()
+    timestamp = DateTimeField(default=datetime.now)

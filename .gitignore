@@ -1,0 +1,78 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+dist-egg/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+
+# Virtual environments
+venv/
+ENV/
+.env/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.venv/
+envs/*
+
+# Logs
+logs/
+*.log
+pip-delete-this-directory.txt
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Database
+*.sqlite
+*.db
+*.db3
+*.sdb
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build files
+*.spec
+
+# Test coverage
+coverage/
+.coverage
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Package manager
+Pipfile.lock
+poetry.lock

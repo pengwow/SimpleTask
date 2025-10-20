@@ -8,10 +8,6 @@ import sys
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
@@ -27,11 +23,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger('python_envs')
 
+# 导入FastAPI
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 # 导入数据库配置和模型
 from app.db.database import engine, Base
 
 # 导入路由
 from app.api.routes import api_router
+
+# 导入nicegui相关模块
+from nicegui import ui
 
 
 @asynccontextmanager
@@ -78,7 +82,15 @@ async def root():
         "docs": "/docs"
     }
 
+# 初始化UI - 将NiceGUI与FastAPI应用集成
+# 注意：必须在创建FastAPI应用实例后再导入页面模块，以避免命名冲突
+from app.dashboard import pages
 
+ui.run_with(
+    app,
+    mount_path='/gui',
+    storage_secret='python_env_manager_secret_key',
+)
 if __name__ == "__main__":
     import uvicorn
     
@@ -86,7 +98,7 @@ if __name__ == "__main__":
     logger.info("服务将在 http://localhost:5001 启动")
     logger.info("API文档地址: http://localhost:5001/docs")
     logger.info("按 Ctrl+C 停止服务")
-    
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",

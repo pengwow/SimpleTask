@@ -34,3 +34,6 @@ mypy
 
 # 任务调度
 APScheduler
+
+# 前端UI框架
+nicegui

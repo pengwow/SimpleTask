@@ -68,54 +68,20 @@ def create_python_env(env_id):
         
         # 执行创建虚拟环境的命令
         cmd = [sys.executable, '-m', 'venv', env_path]
-        process = None
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                # 设置预读取缓冲区
-                bufsize=1
-            )
-            
-            # 捕获输出日志
-            while True:
-                # 使用非阻塞方式读取输出，避免热重载时被阻塞
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    log_env(env_id, line.strip())
-        except Exception as e:
-            log_env(env_id, f'执行命令时出错: {str(e)}', 'ERROR')
-            # 如果进程还在运行，尝试终止它
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    # 等待进程终止，最多5秒
-                    process.wait(timeout=5)
-                except:
-                    try:
-                        process.kill()
-                    except:
-                        pass
-            raise
-        finally:
-            # 确保进程被终止
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=3)
-                except:
-                    try:
-                        process.kill()
-                    except:
-                        pass
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
         
-        # 检查进程返回码
-        returncode = process.returncode if process else -1
-        if returncode == 0:
+        # 捕获输出日志
+        for line in process.stdout:
+            log_env(env_id, line.strip())
+        
+        process.wait()
+        
+        if process.returncode == 0:
             env.path = env_path
             env.status = 'installing'
             log_env(env_id, '虚拟环境创建成功')
@@ -133,7 +99,7 @@ def create_python_env(env_id):
                 db.commit()
         else:
             env.status = 'failed'
-            log_env(env_id, f'虚拟环境创建失败，返回码: {returncode}', 'ERROR')
+            log_env(env_id, '虚拟环境创建失败', 'ERROR')
         
         env.update_time = datetime.now()
         db.commit()

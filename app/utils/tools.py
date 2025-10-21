@@ -107,15 +107,14 @@ def log_env(env_id, message, level='INFO'):
             db.close()
 
 # 安装依赖包
-def install_requirements(env_id, env_path, requirements, mirror_source=None):
-    """
-    安装虚拟环境的依赖包
+def install_requirements(env_id, env_path, requirements=None, mirror_source=None):
+    """安装Python依赖包
     
     参数:
         env_id: 环境ID
         env_path: 虚拟环境路径
-        requirements: 依赖包列表字符串，以换行符(\r\n或\n)分隔
-        mirror_source: 镜像源URL
+        requirements: 依赖包列表，字符串格式，每行一个包
+        mirror_source: 可选的pip镜像源URL
     
     返回:
         bool: 安装是否成功
@@ -123,6 +122,7 @@ def install_requirements(env_id, env_path, requirements, mirror_source=None):
     # 确保导入语句在函数内部
     import os
     import tempfile
+    import subprocess
     
     # 初始化成功标志和临时文件路径
     success = False
@@ -163,14 +163,6 @@ def install_requirements(env_id, env_path, requirements, mirror_source=None):
             log_env(env_id, f'创建临时文件失败: {str(e)}', 'ERROR')
             return False
         
-        log_env(env_id, '函数执行完成，返回成功状态')
-        # 由于之前的实现可能在执行pip命令时卡住，这里先返回成功
-        # 实际环境中可以根据需要取消下面的返回语句，启用真实的pip安装
-        # success = True
-        # return success
-        
-        # 以下是实际的pip安装代码，当前被注释掉以确保函数能够退出
-        
         # 构建pip命令，使用-r参数从文件安装
         cmd = [python_path, '-m', 'pip', 'install', '-r', temp_file_path]
         
@@ -184,8 +176,30 @@ def install_requirements(env_id, env_path, requirements, mirror_source=None):
         
         log_env(env_id, f'准备执行命令: {cmd}')
         
-        # 注意：实际环境中可以取消注释下面的代码来执行真实的pip安装
-        # 为了确保函数能够退出，当前注释掉了subprocess调用
+        # 执行pip安装命令
+        try:
+            # 确保临时文件存在
+            if not os.path.exists(temp_file_path):
+                log_env(env_id, f'错误: 临时文件不存在: {temp_file_path}', 'ERROR')
+                success = False
+                return success
+                
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            # 检查执行结果
+            if result.returncode == 0:
+                log_env(env_id, '依赖包安装成功')
+                success = True
+            else:
+                log_env(env_id, f'依赖包安装失败，返回码: {result.returncode}', 'ERROR')
+                log_env(env_id, f'错误输出: {result.stderr}', 'ERROR')
+                success = False
+        except subprocess.TimeoutExpired:
+            log_env(env_id, 'pip安装命令执行超时', 'ERROR')
+            success = False
+        except Exception as e:
+            log_env(env_id, f'执行pip命令时发生异常: {str(e)}', 'ERROR')
+            success = False
         
             
     except Exception as e:

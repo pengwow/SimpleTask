@@ -73,15 +73,28 @@ def test_get_envs():
         response = requests.get(f'{BASE_URL}/envs')
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 200:
-                print_success(f"获取环境列表成功，共 {len(data.get('data', []))} 个环境")
-                if data.get('data'):
+            # 检查返回的数据类型，如果是列表直接处理
+            if isinstance(data, list):
+                print_success(f"获取环境列表成功，共 {len(data)} 个环境")
+                if data:
                     print("环境列表预览:")
-                    for env in data['data'][:3]:  # 只显示前3个
-                        print(f"  - {env['name']} (v{env['python_version']}, {env['status']})")
+                    for env in data[:3]:  # 只显示前3个
+                        print(f"  - {env.get('name', 'N/A')} (v{env.get('python_version', 'N/A')}, {env.get('status', 'N/A')})")
                 return True
+            # 兼容旧的字典格式
+            elif isinstance(data, dict):
+                if data.get('code') == 200:
+                    print_success(f"获取环境列表成功，共 {len(data.get('data', []))} 个环境")
+                    if data.get('data'):
+                        print("环境列表预览:")
+                        for env in data['data'][:3]:  # 只显示前3个
+                            print(f"  - {env.get('name', 'N/A')} (v{env.get('python_version', 'N/A')}, {env.get('status', 'N/A')})")
+                    return True
+                else:
+                    print_error(f"获取环境列表失败: {data.get('message')}")
+                    return False
             else:
-                print_error(f"获取环境列表失败: {data.get('message')}")
+                print_error(f"获取环境列表返回数据格式未知: {type(data)}")
                 return False
         else:
             print_error(f"获取环境列表失败，状态码: {response.status_code}")
@@ -97,15 +110,27 @@ def test_get_mirrors():
         response = requests.get(f'{BASE_URL}/mirrors')
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 200:
-                mirrors = data.get('data', [])
-                print_success(f"获取镜像源列表成功，共 {len(mirrors)} 个镜像源")
-                active_mirrors = [m for m in mirrors if m.get('is_active')]
+            # 检查返回的数据类型，如果是列表直接处理
+            if isinstance(data, list):
+                print_success(f"获取镜像源列表成功，共 {len(data)} 个镜像源")
+                active_mirrors = [m for m in data if m.get('is_active')]
                 if active_mirrors:
-                    print(f"当前活跃镜像源: {active_mirrors[0]['name']} ({active_mirrors[0]['url']})")
+                    print(f"当前活跃镜像源: {active_mirrors[0].get('name', 'N/A')} ({active_mirrors[0].get('url', 'N/A')})")
                 return True
+            # 兼容旧的字典格式
+            elif isinstance(data, dict):
+                if data.get('code') == 200:
+                    mirrors = data.get('data', [])
+                    print_success(f"获取镜像源列表成功，共 {len(mirrors)} 个镜像源")
+                    active_mirrors = [m for m in mirrors if m.get('is_active')]
+                    if active_mirrors:
+                        print(f"当前活跃镜像源: {active_mirrors[0].get('name', 'N/A')} ({active_mirrors[0].get('url', 'N/A')})")
+                    return True
+                else:
+                    print_error(f"获取镜像源列表失败: {data.get('message')}")
+                    return False
             else:
-                print_error(f"获取镜像源列表失败: {data.get('message')}")
+                print_error(f"获取镜像源列表返回数据格式未知: {type(data)}")
                 return False
         else:
             print_error(f"获取镜像源列表失败，状态码: {response.status_code}")
@@ -122,7 +147,14 @@ def test_create_env(env_name, python_version='3.9.21', requirements=''):
         check_response = requests.get(f'{BASE_URL}/envs')
         if check_response.status_code == 200:
             data = check_response.json()
-            if data.get('code') == 200:
+            # 处理列表类型的返回数据
+            if isinstance(data, list):
+                for env in data:
+                    if env.get('name') == env_name:
+                        print_warning(f"环境 '{env_name}' 已存在，跳过创建")
+                        return True
+            # 兼容旧的字典格式
+            elif isinstance(data, dict) and data.get('code') == 200:
                 existing_envs = data.get('data', [])
                 for env in existing_envs:
                     if env.get('name') == env_name:
@@ -140,13 +172,22 @@ def test_create_env(env_name, python_version='3.9.21', requirements=''):
         response = requests.post(f'{BASE_URL}/envs', json=payload)
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 200:
-                env_id = data.get('data', {}).get('id')
+            # 检查是否返回的是环境对象（列表的情况已经在错误信息中排除）
+            if 'id' in data:
+                env_id = data.get('id')
                 print_success(f"创建环境任务已提交，环境ID: {env_id}")
                 print_info(f"环境 '{env_name}' 正在创建中，请通过日志流查看进度")
                 return env_id  # 返回环境ID，用于后续测试
+            # 兼容旧的字典格式
+            elif isinstance(data, dict) and data.get('code') == 200:
+                env_id = data.get('data', {}).get('id')
+                print_success(f"创建环境任务已提交，环境ID: {env_id}")
+                print_info(f"环境 '{env_name}' 正在创建中，请通过日志流查看进度")
+                return env_id
             else:
-                print_error(f"创建环境失败: {data.get('message')}")
+                # 处理可能的错误信息
+                error_msg = data.get('detail') or data.get('message') or "未知错误"
+                print_error(f"创建环境失败: {error_msg}")
                 return False
         else:
             print_error(f"创建环境失败，状态码: {response.status_code}")
@@ -162,16 +203,30 @@ def test_get_env_logs(env_id):
         response = requests.get(f'{BASE_URL}/envs/{env_id}/logs')
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 200:
-                logs = data.get('data', [])
+            # 检查返回的数据类型，如果是列表直接处理
+            if isinstance(data, list):
+                logs = data
                 print_success(f"获取环境日志成功，共 {len(logs)} 条日志")
                 if logs:
                     print("最新5条日志:")
                     for log in logs[-5:]:  # 显示最新5条
-                        print(f"  [{log['timestamp']}] [{log['level']}] {log['message']}")
+                        print(f"  [{log.get('timestamp', 'N/A')}] [{log.get('level', 'N/A')}] {log.get('message', 'N/A')}")
                 return True
+            # 兼容旧的字典格式
+            elif isinstance(data, dict):
+                if data.get('code') == 200:
+                    logs = data.get('data', [])
+                    print_success(f"获取环境日志成功，共 {len(logs)} 条日志")
+                    if logs:
+                        print("最新5条日志:")
+                        for log in logs[-5:]:  # 显示最新5条
+                            print(f"  [{log.get('timestamp', 'N/A')}] [{log.get('level', 'N/A')}] {log.get('message', 'N/A')}")
+                    return True
+                else:
+                    print_error(f"获取环境日志失败: {data.get('message')}")
+                    return False
             else:
-                print_error(f"获取环境日志失败: {data.get('message')}")
+                print_error(f"获取环境日志返回数据格式未知: {type(data)}")
                 return False
         else:
             print_error(f"获取环境日志失败，状态码: {response.status_code}")
@@ -187,12 +242,19 @@ def test_delete_env(env_id):
         response = requests.delete(f'{BASE_URL}/envs/{env_id}')
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 200:
+            # 检查返回的数据
+            if isinstance(data, dict):
+                # 兼容旧的字典格式
+                if data.get('code') == 200:
+                    print_success(f"删除环境成功")
+                    return True
+                else:
+                    error_msg = data.get('detail') or data.get('message') or "未知错误"
+                    print_error(f"删除环境失败: {error_msg}")
+                    return False
+            else:
                 print_success(f"删除环境成功")
                 return True
-            else:
-                print_error(f"删除环境失败: {data.get('message')}")
-                return False
         else:
             print_error(f"删除环境失败，状态码: {response.status_code}")
             return False
@@ -205,7 +267,7 @@ def test_stream_logs(env_id, duration=10):
     print_info(f"测试实时日志流 (持续 {duration} 秒)...")
     try:
         import http.client as http_client
-        conn = http_client.HTTPConnection('localhost', 5000)
+        conn = http_client.HTTPConnection('localhost', 5001)
         conn.request('GET', f'/api/envs/{env_id}/log_stream')
         response = conn.getresponse()
         

@@ -58,7 +58,7 @@ class DashboardUI:
         
         # 创建顶部导航栏
         with ui.header(elevated=True).classes('items-center justify-between'):
-            ui.label('Python虚拟环境管理系统').classes('text-2xl font-bold')
+            ui.label('任务管理系统').classes('text-2xl font-bold')
             with ui.row():
                     ui.button('虚拟环境', on_click=lambda: ui.navigate.to('/environments'))
                     ui.button('任务管理', on_click=lambda: ui.navigate.to('/tasks'))

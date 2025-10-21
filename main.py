@@ -37,6 +37,9 @@ from app.api.routes import api_router
 # 导入nicegui相关模块
 from nicegui import ui
 
+# 导入uvicorn用于运行服务
+import uvicorn
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -92,8 +95,6 @@ ui.run_with(
     storage_secret='python_env_manager_secret_key',
 )
 if __name__ == "__main__":
-    import uvicorn
-    
     logger.info("启动Python虚拟环境管理服务...")
     logger.info("服务将在 http://localhost:5001 启动")
     logger.info("API文档地址: http://localhost:5001/docs")

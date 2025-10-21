@@ -16,7 +16,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 导入项目管理模块和数据库模型
-from app.models.db import db, Project, ProjectTag, ProjectToTag
+from app.db import get_db, Project, ProjectTag, ProjectToTag
 from app.projects.project_manager import ProjectManager, PROJECTS_ROOT
 from app.utils.tools import ensure_dir_exists
 
@@ -50,6 +50,10 @@ class TestProjectManager(unittest.TestCase):
         """创建测试数据"""
         # 注意：这里不实际创建数据库记录，仅测试核心功能
         pass
+        
+    def _get_db(self):
+        """获取数据库会话"""
+        return get_db()
     
     def test_create_project(self):
         """测试创建项目功能
@@ -73,10 +77,14 @@ class TestProjectManager(unittest.TestCase):
         
         # 检查项目是否存在
         project_id = result['data']['id']
-        project = Project.get_by_id(project_id)
-        self.assertIsNotNone(project)
-        self.assertEqual(project.name, "test_project")
-        self.assertEqual(project.description, "测试项目")
+        db = next(self._get_db())
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            self.assertIsNotNone(project)
+            self.assertEqual(project.name, "test_project")
+            self.assertEqual(project.description, "测试项目")
+        finally:
+            db.close()
         
         print("✓ 创建项目功能测试通过")
     

@@ -14,7 +14,7 @@ import uuid
 import time
 from datetime import datetime
 from pathlib import Path
-from app.models.db import db, Task, TaskExecution, TaskLog
+from app.db import get_db, Task, TaskExecution, TaskLog
 from app.utils.tools import ensure_dir_exists
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor, ProcessPoolExecutor
@@ -96,18 +96,27 @@ class TaskManager:
                 return {'success': False, 'message': '调度配置格式无效，必须是JSON字符串'}
             
             # 保存任务到数据库
-            with db.atomic():
-                task = Task.create(
+            db = next(get_db())
+            try:
+                task = Task(
                     name=name,
                     description=description,
-                    project=project_id if project_id else None,
-                    python_env=python_env_id,
+                    project_id=project_id if project_id else None,
+                    python_env_id=python_env_id,
                     command=command,
                     schedule_type=schedule_type,
                     schedule_config=schedule_config,
                     max_instances=max_instances,
                     update_time=datetime.now()
                 )
+                db.add(task)
+                db.commit()
+                db.refresh(task)
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             logger.info(f"创建任务成功: {name} (ID: {task.id})")
             return {'success': True, 'data': {'id': task.id}}
@@ -132,30 +141,41 @@ class TaskManager:
         """
         try:
             # 构建查询
-            query = Task.select()
-            
-            # 搜索过滤
-            if search:
-                query = query.where(Task.name.contains(search) | Task.description.contains(search) | Task.command.contains(search))
-            
-            # 项目过滤
-            if project_id is not None:
-                query = query.where(Task.project == project_id)
-            
-            # 环境过滤
-            if python_env_id is not None:
-                query = query.where(Task.python_env == python_env_id)
-            
-            # 状态过滤
-            if is_active is not None:
-                query = query.where(Task.is_active == is_active)
-            
-            # 排序
-            query = query.order_by(Task.update_time.desc())
-            
-            # 分页
-            total = query.count()
-            tasks = list(query.paginate(page, per_page))
+            db = get_db()
+            try:
+                query = db.query(Task)
+                
+                # 搜索过滤
+                if search:
+                    from sqlalchemy import or_
+                    query = query.filter(
+                        or_(
+                            Task.name.contains(search),
+                            Task.description.contains(search),
+                            Task.command.contains(search)
+                        )
+                    )
+                
+                # 项目过滤
+                if project_id is not None:
+                    query = query.filter(Task.project_id == project_id)
+                
+                # 环境过滤
+                if python_env_id is not None:
+                    query = query.filter(Task.python_env_id == python_env_id)
+                
+                # 状态过滤
+                if is_active is not None:
+                    query = query.filter(Task.is_active == is_active)
+                
+                # 排序
+                query = query.order_by(Task.update_time.desc())
+                
+                # 分页
+                total = query.count()
+                tasks = query.offset((page - 1) * per_page).limit(per_page).all()
+            finally:
+                db.close()
             
             # 构建返回结果
             data = []
@@ -211,10 +231,14 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
+            db = next(get_db())
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+            finally:
+                db.close()
             
             # 获取下次执行时间
             next_run_time = self.get_next_run_time(task.id)
@@ -256,10 +280,14 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+            finally:
+                db.close()
             
             # 验证调度配置（如果提供）
             if 'schedule_config' in kwargs:
@@ -280,10 +308,17 @@ class TaskManager:
                 self.pause_task(task_id)
             
             # 更新任务
-            with db.atomic():
-                update_data = {k: v for k, v in kwargs.items() if k in Task._meta.fields}
+            db = next(get_db())
+            try:
+                update_data = {k: v for k, v in kwargs.items() if hasattr(Task, k)}
                 update_data['update_time'] = datetime.now()
-                Task.update(**update_data).where(Task.id == task_id).execute()
+                db.query(Task).filter(Task.id == task_id).update(update_data)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 如果之前是活跃的，重新启动
             if was_active and ('is_active' not in kwargs or kwargs['is_active']):
@@ -307,19 +342,27 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
-            
-            # 暂停任务
-            self.pause_task(task_id)
-            
-            # 删除任务
-            with db.atomic():
-                # 级联删除相关记录
-                TaskExecution.delete().where(TaskExecution.task == task_id).execute()
-                Task.delete().where(Task.id == task_id).execute()
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+                
+                # 暂停任务
+                self.pause_task(task_id)
+                
+                # 删除任务
+                with db.begin():
+                    # 级联删除相关记录
+                    db.query(TaskExecution).filter(TaskExecution.task_id == task_id).delete()
+                    db.delete(task)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             logger.info(f"删除任务成功: {task_id}")
             return {'success': True}
@@ -339,10 +382,14 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+            finally:
+                db.close()
             
             # 如果调度器未初始化，先初始化
             if not self.scheduler or not self.scheduler.running:
@@ -416,8 +463,18 @@ class TaskManager:
                 )
             
             # 更新任务状态
-            with db.atomic():
-                Task.update(is_active=True, update_time=datetime.now()).where(Task.id == task_id).execute()
+            db = get_db()
+            try:
+                db.query(Task).filter(Task.id == task_id).update({
+                    'is_active': True,
+                    'update_time': datetime.now()
+                })
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             logger.info(f"启动任务成功: {task_id} ({task.name})")
             return {'success': True}
@@ -437,10 +494,14 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+            finally:
+                db.close()
             
             # 移除调度器中的任务
             if self.scheduler and self.scheduler.running:
@@ -450,8 +511,18 @@ class TaskManager:
                     pass  # 忽略任务不存在的异常
             
             # 更新任务状态
-            with db.atomic():
-                Task.update(is_active=False, update_time=datetime.now()).where(Task.id == task_id).execute()
+            db = get_db()
+            try:
+                db.query(Task).filter(Task.id == task_id).update({
+                    'is_active': False,
+                    'update_time': datetime.now()
+                })
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             logger.info(f"暂停任务成功: {task_id} ({task.name})")
             return {'success': True}
@@ -468,18 +539,28 @@ class TaskManager:
         """
         try:
             # 获取任务
-            task = Task.get_or_none(Task.id == task_id)
-            
-            if not task:
-                logger.error(f"执行任务失败: 任务不存在 ({task_id})")
-                return
-            
-            # 创建执行记录
-            with db.atomic():
-                execution = TaskExecution.create(
-                    task=task,
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                
+                if not task:
+                    logger.error(f"执行任务失败: 任务不存在 ({task_id})")
+                    return
+                
+                # 创建执行记录
+                execution = TaskExecution(
+                    task_id=task_id,
                     status='running'
                 )
+                db.add(execution)
+                db.commit()
+                db.refresh(execution)
+            except Exception as e:
+                db.rollback()
+                logger.error(f"创建执行记录失败: {str(e)}")
+                return
+            finally:
+                db.close()
             
             # 记录开始日志
             self._log_task_execution(execution.id, 'INFO', f'任务开始执行: {task.name}')
@@ -505,14 +586,18 @@ class TaskManager:
         """
         try:
             # 获取任务和执行记录
-            task = Task.get_or_none(Task.id == task_id)
-            execution = TaskExecution.get_or_none(TaskExecution.id == execution_id)
-            
-            if not task or not execution:
-                return
-            
-            # 获取虚拟环境路径
-            venv_path = task.python_env.path
+            db = get_db()
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
+                
+                if not task or not execution:
+                    return
+                
+                # 获取虚拟环境路径
+                venv_path = task.python_env.path
+            finally:
+                db.close()
             
             # 构建命令执行环境
             env = os.environ.copy()
@@ -600,13 +685,20 @@ class TaskManager:
             end_time = datetime.now()
             duration = (end_time - execution.start_time).total_seconds()
             
-            with db.atomic():
-                TaskExecution.update(
-                    end_time=end_time,
-                    status=status,
-                    duration=duration,
-                    error_message=error_message if status == 'failed' else None
-                ).where(TaskExecution.id == execution.id).execute()
+            db = get_db()
+            try:
+                db.query(TaskExecution).filter(TaskExecution.id == execution.id).update({
+                    'end_time': end_time,
+                    'status': status,
+                    'duration': duration,
+                    'error_message': error_message if status == 'failed' else None
+                })
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"更新执行记录失败: {str(e)}")
+            finally:
+                db.close()
                 
             # 从运行任务映射中移除
             with RUNNING_TASKS_LOCK:
@@ -620,18 +712,25 @@ class TaskManager:
             
             # 更新执行记录
             try:
-                execution = TaskExecution.get_or_none(TaskExecution.id == execution_id)
-                if execution:
-                    end_time = datetime.now()
-                    duration = (end_time - execution.start_time).total_seconds() if execution.start_time else None
-                    
-                    with db.atomic():
-                        TaskExecution.update(
-                            end_time=end_time,
-                            status='failed',
-                            duration=duration,
-                            error_message=error_message
-                        ).where(TaskExecution.id == execution.id).execute()
+                db = get_db()
+                try:
+                    execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
+                    if execution:
+                        end_time = datetime.now()
+                        duration = (end_time - execution.start_time).total_seconds() if execution.start_time else None
+                        
+                        db.query(TaskExecution).filter(TaskExecution.id == execution.id).update({
+                            'end_time': end_time,
+                            'status': 'failed',
+                            'duration': duration,
+                            'error_message': error_message
+                        })
+                        db.commit()
+                except:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
             except:
                 pass
             
@@ -650,22 +749,30 @@ class TaskManager:
         """
         try:
             # 获取执行记录，用于获取任务ID
-            execution = TaskExecution.get_or_none(TaskExecution.id == execution_id)
-            if not execution:
-                return
-            
-            # 分割长消息，避免数据库限制
-            max_length = 2000
-            messages = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-            
-            with db.atomic():
+            db = get_db()
+            try:
+                execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
+                if not execution:
+                    return
+                
+                # 分割长消息，避免数据库限制
+                max_length = 2000
+                messages = [message[i:i+max_length] for i in range(0, len(message), max_length)]
+                
                 for msg in messages:
-                    TaskLog.create(
-                        execution=execution_id,
+                    log = TaskLog(
+                        execution_id=execution_id,
                         level=level,
                         message=msg,
                         create_time=datetime.now()
                     )
+                    db.add(log)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"保存日志失败: {str(e)}")
+            finally:
+                db.close()
             
             # 添加到日志队列（用于实时日志查看）
             log_queue_id = f"task_{execution.task.id}_{execution_id}"
@@ -697,9 +804,13 @@ class TaskManager:
         """
         try:
             # 检查执行记录是否存在
-            execution = TaskExecution.get_or_none(TaskExecution.id == execution_id)
-            if not execution:
-                return {'success': False, 'message': '执行记录不存在'}
+            db = get_db()
+            try:
+                execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
+                if not execution:
+                    return {'success': False, 'message': '执行记录不存在'}
+            finally:
+                db.close()
             
             # 检查任务是否正在运行
             with RUNNING_TASKS_LOCK:
@@ -737,13 +848,20 @@ class TaskManager:
             end_time = datetime.now()
             duration = (end_time - execution.start_time).total_seconds()
             
-            with db.atomic():
-                TaskExecution.update(
-                    end_time=end_time,
-                    status='terminated',
-                    duration=duration,
-                    error_message='任务被用户强制终止'
-                ).where(TaskExecution.id == execution_id).execute()
+            db = get_db()
+            try:
+                db.query(TaskExecution).filter(TaskExecution.id == execution_id).update({
+                    'end_time': end_time,
+                    'status': 'terminated',
+                    'duration': duration,
+                    'error_message': '任务被用户强制终止'
+                })
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"更新执行记录失败: {str(e)}")
+            finally:
+                db.close()
                 
             return {'success': True, 'message': '任务已成功终止'}
             
@@ -778,25 +896,30 @@ class TaskManager:
         """
         try:
             # 验证任务是否存在
-            task = Task.get_or_none(Task.id == task_id)
-            if not task:
-                return {}
-            
-            # 获取执行记录
-            executions = TaskExecution.select().where(TaskExecution.task == task_id)
-            
-            # 计算统计数据
-            total = executions.count()
-            completed = executions.where(TaskExecution.status == 'completed').count()
-            failed = executions.where(TaskExecution.status == 'failed').count()
-            terminated = executions.where(TaskExecution.status == 'terminated').count()
-            
-            # 计算平均执行时间
-            durations = [e.duration for e in executions if e.duration and e.status == 'completed']
-            avg_duration = sum(durations) / len(durations) if durations else 0
-            
-            # 获取最近执行状态
-            last_execution = executions.order_by(TaskExecution.start_time.desc()).first()
+            db = next(get_db())
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                if not task:
+                    return {}
+                
+                # 获取执行记录
+                executions = db.query(TaskExecution).filter(TaskExecution.task_id == task_id).all()
+                
+                # 计算统计数据
+                total = len(executions)
+                completed = sum(1 for e in executions if e.status == 'completed')
+                failed = sum(1 for e in executions if e.status == 'failed')
+                terminated = sum(1 for e in executions if e.status == 'terminated')
+                
+                # 计算平均执行时间
+                durations = [e.duration for e in executions if e.duration and e.status == 'completed']
+                avg_duration = sum(durations) / len(durations) if durations else 0
+                
+                # 获取最近执行状态
+                from sqlalchemy import desc
+                last_execution = db.query(TaskExecution).filter(TaskExecution.task_id == task_id).order_by(desc(TaskExecution.start_time)).first()
+            finally:
+                db.close()
             last_status = last_execution.status if last_execution else None
             last_execution_time = last_execution.start_time.isoformat() if last_execution else None
             
@@ -818,7 +941,11 @@ class TaskManager:
         """加载所有活跃的任务到调度器"""
         try:
             # 获取所有活跃的任务
-            active_tasks = Task.select().where(Task.is_active == True)
+            db = next(get_db())
+            try:
+                active_tasks = db.query(Task).filter(Task.is_active == True).all()
+            finally:
+                db.close()
             
             for task in active_tasks:
                 try:
@@ -827,8 +954,14 @@ class TaskManager:
                 except Exception as e:
                     logger.error(f"加载任务 {task.name} 失败: {str(e)}")
                     # 标记任务为非活跃状态
-                    with db.atomic():
-                        Task.update(is_active=False).where(Task.id == task.id).execute()
+                    db = next(get_db())
+                    try:
+                        db.query(Task).filter(Task.id == task.id).update({'is_active': False})
+                        db.commit()
+                    except:
+                        db.rollback()
+                    finally:
+                        db.close()
         except Exception as e:
             logger.error(f"加载活跃任务时发生错误: {str(e)}")
     
@@ -876,23 +1009,28 @@ class TaskManager:
         """
         try:
             # 验证任务是否存在
-            task = Task.get_or_none(Task.id == task_id)
-            if not task:
-                return {'success': False, 'message': '任务不存在'}
-            
-            # 构建查询
-            query = TaskExecution.select().where(TaskExecution.task == task_id)
-            
-            # 状态过滤
-            if status:
-                query = query.where(TaskExecution.status == status)
-            
-            # 排序
-            query = query.order_by(TaskExecution.start_time.desc())
-            
-            # 分页
-            total = query.count()
-            executions = list(query.paginate(page, per_page))
+            db = next(get_db())
+            try:
+                task = db.query(Task).filter(Task.id == task_id).first()
+                if not task:
+                    return {'success': False, 'message': '任务不存在'}
+                
+                # 构建查询
+                query = db.query(TaskExecution).filter(TaskExecution.task_id == task_id)
+                
+                # 状态过滤
+                if status:
+                    query = query.filter(TaskExecution.status == status)
+                
+                # 排序
+                from sqlalchemy import desc
+                query = query.order_by(desc(TaskExecution.start_time))
+                
+                # 分页
+                total = query.count()
+                executions = query.offset((page - 1) * per_page).limit(per_page).all()
+            finally:
+                db.close()
             
             # 构建返回结果
             data = []
@@ -944,27 +1082,31 @@ class TaskManager:
         """
         try:
             # 验证执行记录是否存在
-            execution = TaskExecution.get_or_none(TaskExecution.id == execution_id)
-            if not execution:
-                return {'success': False, 'message': '执行记录不存在'}
-            
-            # 构建查询
-            query = TaskLog.select().where(TaskLog.execution == execution_id)
-            
-            # 级别过滤
-            if level:
-                query = query.where(TaskLog.level == level)
-            
-            # 关键词搜索
-            if search:
-                query = query.where(TaskLog.message.contains(search))
-            
-            # 排序
-            query = query.order_by(TaskLog.timestamp)
-            
-            # 分页
-            total = query.count()
-            logs = list(query.paginate(page, per_page))
+            db = next(get_db())
+            try:
+                execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
+                if not execution:
+                    return {'success': False, 'message': '执行记录不存在'}
+                
+                # 构建查询
+                query = db.query(TaskLog).filter(TaskLog.execution_id == execution_id)
+                
+                # 级别过滤
+                if level:
+                    query = query.filter(TaskLog.level == level)
+                
+                # 关键词搜索
+                if search:
+                    query = query.filter(TaskLog.message.contains(search))
+                
+                # 排序
+                query = query.order_by(TaskLog.timestamp)
+                
+                # 分页
+                total = query.count()
+                logs = query.offset((page - 1) * per_page).limit(per_page).all()
+            finally:
+                db.close()
             
             # 构建返回结果
             data = []

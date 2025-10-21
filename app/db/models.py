@@ -2,6 +2,9 @@
 
 包含项目中使用的所有SQLAlchemy数据库模型
 """
+from datetime import datetime
+
+
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text, Float, Table
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -37,11 +40,11 @@ class PythonEnv(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False, index=True)
-    python_version = Column(String(20), default='3.9.21')
+    python_version = Column[str](String(20), default='3.9.21')
     status = Column(String(20), default='pending')
     path = Column(String(255), nullable=False)
-    requirements = Column(Text, nullable=True)
-    create_time = Column(DateTime(timezone=True), server_default=func.now())
+    requirements = Column[str](Text, nullable=True)
+    create_time = Column[datetime](DateTime(timezone=True), server_default=func.now())
     update_time = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     mirror_source_id = Column(Integer, ForeignKey("mirror_sources.id"), nullable=True)
     

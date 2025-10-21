@@ -98,6 +98,106 @@ function start_server() {
     fi
 }
 
+# 启动FastAPI服务
+function start_fastapi() {
+    print_info "启动FastAPI服务..."
+    print_info "服务将在 http://localhost:8000 启动"
+    print_info "API文档地址: http://localhost:8000/docs"
+    print_info "按 Ctrl+C 停止服务"
+    
+    # 设置PYTHONPATH为项目根目录
+    export PYTHONPATH="$(pwd):$PYTHONPATH"
+    
+    # 使用python3运行main.py启动FastAPI服务
+    python3 main.py
+    
+    if [ $? -ne 0 ]; then
+        print_error "FastAPI服务启动失败，请检查错误信息"
+        return 1
+    fi
+}
+
+# 重启服务（默认行为）
+function restart_service() {
+    print_info "执行服务重启操作..."
+    
+    # 查找并停止现有进程
+    print_info "查找并停止现有服务进程..."
+    
+    # 查找FastAPI进程（main.py）
+    fastapi_pid=$(ps aux | grep "python3 main.py" | grep -v grep | awk '{print $2}')
+    if [ ! -z "$fastapi_pid" ]; then
+        print_info "停止FastAPI进程: $fastapi_pid"
+        kill -15 $fastapi_pid 2>/dev/null || true
+        sleep 2
+        # 强制终止仍在运行的进程
+        kill -9 $fastapi_pid 2>/dev/null || true
+    fi
+    
+    # 查找app进程（app.py）
+    app_pid=$(ps aux | grep "python3 app/app.py" | grep -v grep | awk '{print $2}')
+    if [ ! -z "$app_pid" ]; then
+        print_info "停止App进程: $app_pid"
+        kill -15 $app_pid 2>/dev/null || true
+        sleep 2
+        # 强制终止仍在运行的进程
+        kill -9 $app_pid 2>/dev/null || true
+    fi
+    
+    print_success "进程停止完成"
+    print_info "正在启动服务..."
+    
+    # 启动FastAPI服务
+    start_fastapi
+}
+
+# 清理虚拟环境
+function cleanup_envs() {
+    print_info "开始清理虚拟环境..."
+    
+    # 查找并终止与虚拟环境相关的进程
+    print_info "查找并终止与虚拟环境相关的进程..."
+    if [ -d "envs" ]; then
+        # 获取所有虚拟环境路径
+        venv_paths=$(find envs -name "bin" -type d | sed 's/\/bin$//')
+        
+        if [ ! -z "$venv_paths" ]; then
+            for venv_path in $venv_paths; do
+                # 获取虚拟环境中的Python路径
+                python_path="$venv_path/bin/python"
+                if [ -f "$python_path" ]; then
+                    # 查找使用该Python的进程
+                    pids=$(lsof -t "$python_path" 2>/dev/null || true)
+                    if [ ! -z "$pids" ]; then
+                        print_info "终止使用虚拟环境 $venv_path 的进程: $pids"
+                        kill -15 $pids 2>/dev/null || true
+                        # 等待进程结束
+                        sleep 2
+                        # 强制终止仍在运行的进程
+                        kill -9 $pids 2>/dev/null || true
+                    fi
+                fi
+            done
+        fi
+    fi
+    
+    # 清理虚拟环境目录
+    if [ -d "envs" ]; then
+        print_info "删除所有虚拟环境..."
+        rm -rf envs/*
+        if [ $? -eq 0 ]; then
+            print_success "虚拟环境清理成功"
+        else
+            print_error "虚拟环境清理失败"
+            return 1
+        fi
+    else
+        print_info "envs目录不存在，跳过清理"
+    fi
+    
+    return 0
+}
+
 # 显示帮助信息
 function show_help() {
     echo "使用方法: $0 [选项]"
@@ -107,13 +207,19 @@ function show_help() {
     echo "  --skip-db           跳过数据库初始化"
     echo "  --only-db           仅初始化数据库"
     echo "  --test              运行API测试"
+    echo "  --cleanup           清理所有虚拟环境"
+    echo "  --start-server      启动原始服务"
+    echo "  --start-fastapi     启动FastAPI服务"
     echo ""
     echo "示例:"
-    echo "  $0                  完整启动流程（安装依赖、初始化数据库、启动服务）"
+    echo "  $0                  默认执行重启操作（停止现有进程并启动FastAPI服务）"
     echo "  $0 --skip-deps      跳过依赖安装，直接初始化数据库并启动服务"
     echo "  $0 --skip-db        跳过数据库初始化，直接启动服务"
     echo "  $0 --only-db        仅初始化数据库"
     echo "  $0 --test           运行API测试"
+    echo "  $0 --cleanup        清理所有虚拟环境和相关进程"
+    echo "  $0 --start-server   启动原始服务"
+    echo "  $0 --start-fastapi  启动FastAPI服务"
 }
 
 # 主函数
@@ -123,6 +229,10 @@ function main() {
     SKIP_DB=false
     ONLY_DB=false
     RUN_TEST=false
+    CLEANUP=false
+    START_SERVER=false
+    START_FASTAPI=false
+    RESTART=true  # 默认执行重启操作
     
     # 解析命令行参数
     for arg in "$@"; do
@@ -133,15 +243,31 @@ function main() {
                 ;;
             --skip-deps)
                 SKIP_DEPS=true
+                RESTART=false
                 ;;
             --skip-db)
                 SKIP_DB=true
+                RESTART=false
                 ;;
             --only-db)
                 ONLY_DB=true
+                RESTART=false
                 ;;
             --test)
                 RUN_TEST=true
+                RESTART=false
+                ;;
+            --cleanup)
+                CLEANUP=true
+                RESTART=false
+                ;;
+            --start-server)
+                START_SERVER=true
+                RESTART=false
+                ;;
+            --start-fastapi)
+                START_FASTAPI=true
+                RESTART=false
                 ;;
             *)
                 print_error "未知选项: $arg"
@@ -156,6 +282,16 @@ function main() {
         return 1
     fi
     
+    # 如果只是清理环境
+    if [ "$CLEANUP" = true ]; then
+        if ! cleanup_envs; then
+            print_error "清理操作失败"
+            return 1
+        fi
+        print_success "清理操作完成"
+        return 0
+    fi
+    
     # 如果只是运行测试
     if [ "$RUN_TEST" = true ]; then
         print_info "运行API测试..."
@@ -166,6 +302,14 @@ function main() {
     # 如果只是初始化数据库
     if [ "$ONLY_DB" = true ]; then
         if ! init_database; then
+            return 1
+        fi
+        return 0
+    fi
+    
+    # 默认执行重启操作
+    if [ "$RESTART" = true ]; then
+        if ! restart_service; then
             return 1
         fi
         return 0
@@ -187,9 +331,20 @@ function main() {
         print_warning "跳过数据库初始化"
     fi
     
-    # 启动服务
-    if ! start_server; then
-        return 1
+    # 启动指定服务
+    if [ "$START_SERVER" = true ]; then
+        if ! start_server; then
+            return 1
+        fi
+    elif [ "$START_FASTAPI" = true ]; then
+        if ! start_fastapi; then
+            return 1
+        fi
+    else
+        # 兼容原有行为，启动原始服务
+        if ! start_server; then
+            return 1
+        fi
     fi
     
     return 0

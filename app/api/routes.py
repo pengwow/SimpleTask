@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import threading
 from typing import List, Optional
 from datetime import datetime
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Backgro
 from sqlalchemy.orm import Session
 
 from app.db import get_db, MirrorSource, PythonEnv, EnvLog, PythonVersion, Project, ProjectTag, Task, TaskExecution, TaskLog
+from app.virtual_envs.env_manager import create_python_env
 from app.schemas import (
     MirrorSourceCreate, MirrorSourceUpdate, MirrorSourceResponse,
     PythonEnvCreate, PythonEnvUpdate, PythonEnvResponse, PythonEnvWithDetails,
@@ -30,7 +32,7 @@ api_router = APIRouter(
 )
 
 # 项目管理相关路由
-@api_router.get("/api/projects", response_model=List[ProjectWithDetails])
+@api_router.get("/projects", response_model=List[ProjectWithDetails])
 async def get_projects(
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(100, ge=1, le=1000, description="返回的记录数"),
@@ -69,7 +71,7 @@ async def get_projects(
         result.append(project_with_details)
     return result
 
-@api_router.post("/api/projects", response_model=ProjectResponse)
+@api_router.post("/projects", response_model=ProjectResponse)
 async def create_project(
     project_data: ProjectCreate,
     db: Session = Depends(get_db)
@@ -111,7 +113,7 @@ async def create_project(
     
     return db_project
 
-@api_router.get("/api/projects/{project_id}", response_model=ProjectWithDetails)
+@api_router.get("/projects/{project_id}", response_model=ProjectWithDetails)
 async def get_project(
     project_id: int,
     db: Session = Depends(get_db)
@@ -150,7 +152,7 @@ async def get_project(
         tasks_count=len(project.tasks)
     )
 
-@api_router.put("/api/projects/{project_id}", response_model=ProjectResponse)
+@api_router.put("/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: int,
     project_data: ProjectUpdate,
@@ -197,7 +199,7 @@ async def update_project(
     
     return project
 
-@api_router.delete("/api/projects/{project_id}", response_model=dict)
+@api_router.delete("/projects/{project_id}", response_model=dict)
 async def delete_project(
     project_id: int,
     db: Session = Depends(get_db)
@@ -227,7 +229,7 @@ async def delete_project(
     
     return {"message": "项目删除成功"}
 
-@api_router.post("/api/projects/{project_id}/upload")
+@api_router.post("/projects/{project_id}/upload")
 async def upload_project_file(
     project_id: int,
     file: UploadFile = File(...),
@@ -257,7 +259,7 @@ async def upload_project_file(
     # 暂时返回成功信息
     return {"message": "文件上传成功"}
 
-@api_router.get("/api/projects/{project_id}/files/{file_path:path}")
+@api_router.get("/projects/{project_id}/files/{file_path:path}")
 async def get_project_file(
     project_id: int,
     file_path: str,
@@ -284,7 +286,7 @@ async def get_project_file(
     # 暂时返回模拟数据
     return {"content": "文件内容示例", "file_path": file_path}
 
-@api_router.get("/api/project_tags", response_model=List[ProjectTagResponse])
+@api_router.get("/project_tags", response_model=List[ProjectTagResponse])
 async def get_project_tags(
     db: Session = Depends(get_db)
 ):
@@ -300,7 +302,7 @@ async def get_project_tags(
     return tags
 
 # API接口定义 - 虚拟环境管理
-@api_router.get("/api/envs", response_model=List[PythonEnvResponse])
+@api_router.get("/envs", response_model=List[PythonEnvResponse])
 async def get_envs(
     db: Session = Depends(get_db)
 ):
@@ -315,7 +317,7 @@ async def get_envs(
     envs = db.query(PythonEnv).order_by(PythonEnv.create_time.desc()).all()
     return envs
 
-@api_router.get("/api/envs/{env_id}", response_model=PythonEnvWithDetails)
+@api_router.get("/envs/{env_id}", response_model=PythonEnvWithDetails)
 async def get_env(
     env_id: int,
     db: Session = Depends(get_db)
@@ -337,7 +339,7 @@ async def get_env(
         raise HTTPException(status_code=404, detail="虚拟环境不存在")
     return env
 
-@api_router.post("/api/envs", response_model=PythonEnvResponse)
+@api_router.post("/envs", response_model=PythonEnvResponse)
 async def create_env(
     env_data: PythonEnvCreate,
     db: Session = Depends(get_db)
@@ -372,12 +374,14 @@ async def create_env(
     db.commit()
     db.refresh(db_env)
     
-    # 这里应该添加异步创建虚拟环境的逻辑
-    # 暂时直接设置为pending状态
+    # 异步创建虚拟环境
+    # 启动一个线程来执行实际的环境创建操作
+    thread = threading.Thread(target=create_python_env, args=(db_env.id,), daemon=True)
+    thread.start()
     
     return db_env
 
-@api_router.put("/api/envs/{env_id}", response_model=PythonEnvResponse)
+@api_router.put("/envs/{env_id}", response_model=PythonEnvResponse)
 async def update_env(
     env_id: int,
     env_data: PythonEnvUpdate,
@@ -418,7 +422,7 @@ async def update_env(
     
     return env
 
-@api_router.delete("/api/envs/{env_id}", response_model=dict)
+@api_router.delete("/envs/{env_id}", response_model=dict)
 async def delete_env(
     env_id: int,
     db: Session = Depends(get_db)
@@ -449,7 +453,7 @@ async def delete_env(
     
     return {"message": "环境删除成功"}
 
-@api_router.get("/api/envs/{env_id}/logs", response_model=List[EnvLogResponse])
+@api_router.get("/envs/{env_id}/logs", response_model=List[EnvLogResponse])
 async def get_env_logs(
     env_id: int,
     db: Session = Depends(get_db)
@@ -474,11 +478,11 @@ async def get_env_logs(
     # 获取环境日志
     logs = db.query(EnvLog).filter(
         EnvLog.env_id == env_id
-    ).order_by(EnvLog.create_time.desc()).limit(100).all()
+    ).order_by(EnvLog.timestamp.desc()).limit(100).all()
     
     return logs
 
-@api_router.get("/api/envs/{env_id}/log_stream")
+@api_router.get("/envs/{env_id}/log_stream")
 async def log_stream(env_id: int, db: Session = Depends(get_db)):
     """实时获取环境的安装日志流
     
@@ -522,7 +526,7 @@ async def log_stream(env_id: int, db: Session = Depends(get_db)):
 
 
 # API接口定义 - 镜像源管理
-@api_router.get("/api/mirrors", response_model=List[MirrorSourceResponse])
+@api_router.get("/mirrors", response_model=List[MirrorSourceResponse])
 async def get_mirrors(
     db: Session = Depends(get_db)
 ):
@@ -537,7 +541,7 @@ async def get_mirrors(
     mirrors = db.query(MirrorSource).all()
     return mirrors
 
-@api_router.get("/api/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
+@api_router.get("/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
 async def get_mirror(
     mirror_id: int,
     db: Session = Depends(get_db)
@@ -559,7 +563,7 @@ async def get_mirror(
         raise HTTPException(status_code=404, detail="镜像源不存在")
     return mirror
 
-@api_router.post("/api/mirrors", response_model=MirrorSourceResponse)
+@api_router.post("/mirrors", response_model=MirrorSourceResponse)
 async def create_mirror(
     mirror_data: MirrorSourceCreate,
     db: Session = Depends(get_db)
@@ -592,7 +596,7 @@ async def create_mirror(
     
     return new_mirror
 
-@api_router.put("/api/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
+@api_router.put("/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
 async def update_mirror(
     mirror_id: int,
     mirror_data: MirrorSourceUpdate,
@@ -646,7 +650,7 @@ async def update_mirror(
     
     return mirror
 
-@api_router.delete("/api/mirrors/{mirror_id}", response_model=dict)
+@api_router.delete("/mirrors/{mirror_id}", response_model=dict)
 async def delete_mirror(
     mirror_id: int,
     db: Session = Depends(get_db)
@@ -687,7 +691,7 @@ async def delete_mirror(
     
     return {"message": "镜像源删除成功"}
 
-@api_router.get("/api/mirrors/active", response_model=MirrorSourceResponse)
+@api_router.get("/mirrors/active", response_model=MirrorSourceResponse)
 async def get_active_mirror_api(
     db: Session = Depends(get_db)
 ):
@@ -711,7 +715,7 @@ async def get_active_mirror_api(
 # 数据库会话通过get_db依赖项自动管理打开和关闭
 
 # API接口定义 - Python版本管理
-@api_router.get("/api/python_versions", response_model=List[PythonVersionResponse])
+@api_router.get("/python_versions", response_model=List[PythonVersionResponse])
 async def get_python_versions(
     db: Session = Depends(get_db)
 ):
@@ -726,7 +730,7 @@ async def get_python_versions(
     versions = db.query(PythonVersion).order_by(PythonVersion.version.desc()).all()
     return versions
 
-@api_router.get("/api/python_versions/<int:version_id>", response_model=PythonVersionResponse)
+@api_router.get("/python_versions/<int:version_id>", response_model=PythonVersionResponse)
 async def get_python_version(
     version_id: int,
     db: Session = Depends(get_db)
@@ -748,7 +752,7 @@ async def get_python_version(
         raise HTTPException(status_code=404, detail="Python版本不存在")
     return version
 
-@api_router.post("/api/python_versions", response_model=PythonVersionResponse)
+@api_router.post("/python_versions", response_model=PythonVersionResponse)
 async def add_python_version(
     python_version: PythonVersionCreate,
     db: Session = Depends(get_db)
@@ -799,7 +803,7 @@ async def add_python_version(
     
     return db_version
 
-@api_router.post("/api/python_versions/<int:version_id>/set_default", response_model=dict)
+@api_router.post("/python_versions/<int:version_id>/set_default", response_model=dict)
 async def set_default_python_version(
     version_id: int,
     db: Session = Depends(get_db)
@@ -829,7 +833,7 @@ async def set_default_python_version(
     
     return {"message": "默认Python版本设置成功"}
 
-@api_router.delete("/api/python_versions/<int:version_id>", response_model=dict)
+@api_router.delete("/python_versions/<int:version_id>", response_model=dict)
 async def delete_python_version(
     version_id: int,
     db: Session = Depends(get_db)
@@ -864,7 +868,7 @@ async def delete_python_version(
     
     return {"message": "Python版本删除成功"}
 
-@api_router.get("/api/python_versions/<int:version_id>/log_stream")
+@api_router.get("/python_versions/<int:version_id>/log_stream")
 async def python_version_log_stream(
     version_id: int,
     db: Session = Depends(get_db)
@@ -929,7 +933,7 @@ async def python_version_log_stream(
     return StreamingResponse(event_stream(), media_type='text/event-stream')
 
 # 任务管理相关的路由
-@api_router.get("/api/tasks", response_model=List[TaskWithDetails])
+@api_router.get("/tasks", response_model=List[TaskWithDetails])
 async def get_tasks(
     page: int = Query(1, ge=1, description="页码"),
     per_page: int = Query(10, ge=1, le=100, description="每页数量"),
@@ -987,7 +991,7 @@ async def get_tasks(
         "total_pages": (total + per_page - 1) // per_page
     }
 
-@api_router.post("/api/tasks", response_model=TaskResponse)
+@api_router.post("/tasks", response_model=TaskResponse)
 async def create_task(
     task_data: TaskCreate,
     db: Session = Depends(get_db)
@@ -1043,7 +1047,7 @@ async def create_task(
     
     return task
 
-@api_router.get("/api/tasks/<int:task_id>", response_model=TaskResponse)
+@api_router.get("/tasks/<int:task_id>", response_model=TaskResponse)
 async def get_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1065,7 +1069,7 @@ async def get_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
 
-@api_router.put("/api/tasks/<int:task_id>", response_model=TaskResponse)
+@api_router.put("/tasks/<int:task_id>", response_model=TaskResponse)
 async def update_task(
     task_id: int,
     task_data: TaskUpdate,
@@ -1113,7 +1117,7 @@ async def update_task(
     db.refresh(task)
     return task
 
-@api_router.delete("/api/tasks/<int:task_id>")
+@api_router.delete("/tasks/<int:task_id>")
 async def delete_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1151,7 +1155,7 @@ async def delete_task(
     
     return {"success": True, "message": "任务删除成功"}
 
-@api_router.post("/api/tasks/<int:task_id>/start", response_model=TaskResponse)
+@api_router.post("/tasks/<int:task_id>/start", response_model=TaskResponse)
 async def start_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1206,7 +1210,7 @@ async def start_task(
         logger.error(f'启动任务失败: {str(e)}')
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
-@api_router.post("/api/tasks/<int:task_id>/pause", response_model=TaskResponse)
+@api_router.post("/tasks/<int:task_id>/pause", response_model=TaskResponse)
 async def pause_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1252,7 +1256,7 @@ async def pause_task(
         logger.error(f'暂停任务失败: {str(e)}')
         raise HTTPException(status_code=500, detail=f"暂停任务失败: {str(e)}")
 
-@api_router.get("/api/tasks/{task_id}/executions", response_model=List[TaskExecutionWithDetails])
+@api_router.get("/tasks/{task_id}/executions", response_model=List[TaskExecutionWithDetails])
 async def get_task_executions(
     task_id: int,
     page: int = Query(1, ge=1, description="页码"),
@@ -1301,7 +1305,7 @@ async def get_task_executions(
         "pages": (total + per_page - 1) // per_page
     }
 
-@api_router.get("/api/executions/{execution_id}/logs", response_model=TaskLogResponse)
+@api_router.get("/executions/{execution_id}/logs", response_model=TaskLogResponse)
 async def get_execution_logs(
     execution_id: int,
     page: int = Query(1, ge=1, description="页码"),
@@ -1357,7 +1361,7 @@ async def get_execution_logs(
         "total_pages": (total + per_page - 1) // per_page
     }
 
-@api_router.post("/api/executions/<int:execution_id>/terminate")
+@api_router.post("/executions/<int:execution_id>/terminate")
 async def terminate_execution(
     execution_id: int,
     db: Session = Depends(get_db)
@@ -1403,7 +1407,7 @@ async def terminate_execution(
         logger.error(f'终止任务执行失败: {str(e)}')
         raise HTTPException(status_code=500, detail=f"终止任务执行失败: {str(e)}")
 
-@api_router.get("/api/tasks/{task_id}/running_instances", response_model=dict)
+@api_router.get("/tasks/{task_id}/running_instances", response_model=dict)
 async def get_task_running_instances(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1445,7 +1449,7 @@ async def get_task_running_instances(
         "count": len(running_instances)
     }
 
-@api_router.get("/api/tasks/<int:task_id>/stats", response_model=dict)
+@api_router.get("/tasks/<int:task_id>/stats", response_model=dict)
 async def get_task_stats(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1505,7 +1509,7 @@ async def get_task_stats(
         } if latest_execution else None
     }
 
-@api_router.get("/api/tasks/<int:task_id>/executions/<int:execution_id>/realtime_logs")
+@api_router.get("/tasks/<int:task_id>/executions/<int:execution_id>/realtime_logs")
 async def get_realtime_logs(
     task_id: int,
     execution_id: int,

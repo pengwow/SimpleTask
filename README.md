@@ -197,7 +197,7 @@ SimpleTask/
 
 - **app/app.py**: 应用主入口
 - **app/api/routes.py**: API接口定义
-- **app/models/db.py**: 数据模型定义
+- **app/db/models.py**: 数据模型定义
 - **app/virtual_envs/env_manager.py**: 虚拟环境管理逻辑
 - **app/utils/tools.py**: 工具函数
 - **init_db.py**: 数据库初始化和管理工具

@@ -15,9 +15,9 @@ import zipfile
 import requests
 from datetime import datetime
 from pathlib import Path
-from app.models.db import db, Project, ProjectTag, ProjectToTag
+from urllib.parse import urlparse, urlunparse
+from app.db import get_db, Project, ProjectTag, ProjectToTag
 # 导入工具函数
-import os
 from app.utils.tools import ensure_dir_exists
 
 # 配置日志
@@ -55,28 +55,38 @@ class ProjectManager:
         """
         try:
             # 检查项目名称是否已存在
-            existing_project = Project.get_or_none(Project.name == name)
-            if existing_project:
-                return {'success': False, 'message': f'项目名称 {name} 已存在'}
-            
-            # 创建项目记录
-            project = Project.create(
-                name=name,
-                description=description,
-                work_path=work_path,
-                source_type=source_type,
-                source_url=source_url,
-                branch=branch,
-                git_username=git_username,
-                git_password=git_password,
-                status='pending',
-                create_time=datetime.now(),
-                update_time=datetime.now()
-            )
+            db = get_db()
+            try:
+                existing_project = db.query(Project).filter(Project.name == name).first()
+                if existing_project:
+                    return {'success': False, 'message': f'项目名称 {name} 已存在'}
+                
+                # 创建项目记录
+                project = Project(
+                    name=name,
+                    description=description,
+                    work_path=work_path,
+                    source_type=source_type,
+                    source_url=source_url,
+                    branch=branch,
+                    git_username=git_username,
+                    git_password=git_password,
+                    status='pending',
+                    create_time=datetime.now(),
+                    update_time=datetime.now()
+                )
+                db.add(project)
+                db.commit()
+                db.refresh(project)
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 处理标签
             if tags:
-                ProjectManager._add_tags_to_project(project.id, tags)
+                ProjectManager._add_tags_to_project(project.id, tags, db)
             
             # 启动导入线程
             threading.Thread(target=ProjectManager._import_project, args=(project.id,)).start()
@@ -101,12 +111,16 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = get_db()
+            # 获取项目
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return {'success': False, 'message': '项目不存在'}
             
             # 更新项目基本信息
             if name and name != project.name:
                 # 检查新名称是否已存在
-                existing_project = Project.get_or_none(Project.name == name, Project.id != project_id)
+                existing_project = db.query(Project).filter(Project.name == name, Project.id != project_id).first()
                 if existing_project:
                     return {'success': False, 'message': f'项目名称 {name} 已存在'}
                 
@@ -125,19 +139,25 @@ class ProjectManager:
                 project.work_path = work_path
             
             project.update_time = datetime.now()
-            project.save()
+            db.commit()
             
             # 更新标签
             if tags is not None:
                 # 删除现有标签关联
-                ProjectToTag.delete().where(ProjectToTag.project == project_id).execute()
+                db.query(ProjectToTag).filter(ProjectToTag.project_id == project_id).delete()
+                db.commit()
                 # 添加新标签
-                ProjectManager._add_tags_to_project(project_id, tags)
+                ProjectManager._add_tags_to_project(project_id, tags, db)
             
             return {'success': True, 'message': '项目更新成功'}
         except Exception as e:
+            if 'db' in locals():
+                db.rollback()
             logger.error(f'更新项目失败: {str(e)}')
             return {'success': False, 'message': f'更新项目失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def delete_project(project_id):
@@ -150,7 +170,11 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = get_db()
+            # 获取项目
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return {'success': False, 'message': '项目不存在'}
             
             # 删除项目文件夹
             project_path = os.path.join(PROJECTS_ROOT, project.name)
@@ -158,14 +182,19 @@ class ProjectManager:
                 shutil.rmtree(project_path, ignore_errors=True)
             
             # 删除项目记录和相关标签关联
-            with db.atomic():
-                ProjectToTag.delete().where(ProjectToTag.project == project_id).execute()
-                project.delete_instance()
+            db.query(ProjectToTag).filter(ProjectToTag.project_id == project_id).delete()
+            db.delete(project)
+            db.commit()
             
             return {'success': True, 'message': f'项目 {project.name} 删除成功'}
         except Exception as e:
+            if 'db' in locals():
+                db.rollback()
             logger.error(f'删除项目失败: {str(e)}')
             return {'success': False, 'message': f'删除项目失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def get_projects(page=1, per_page=10, search=None, tags=None):
@@ -181,28 +210,55 @@ class ProjectManager:
             dict: 项目列表和分页信息
         """
         try:
-            query = Project.select()
+            # 构建查询
+            db = get_db()
+            # 获取查询对象
+            query = db.query(Project)
             
             # 搜索过滤
             if search:
-                query = query.where(Project.name.contains(search) | Project.description.contains(search))
-            
+                from sqlalchemy import or_
+                query = query.filter(
+                    or_(
+                        Project.name.contains(search),
+                        Project.description.contains(search)
+                    )
+                )
+                
             # 标签过滤
             if tags:
-                tag_ids = [tag.id for tag in ProjectTag.select().where(ProjectTag.name.in_(tags))]
-                project_ids = [pt.project.id for pt in ProjectToTag.select().where(ProjectToTag.tag.in_(tag_ids))]
-                query = query.where(Project.id.in_(project_ids))
-            
+                tag_ids = [tag.id for tag in db.query(ProjectTag).filter(ProjectTag.name.in_(tags)).all()]
+                if tag_ids:
+                    project_ids = [pt.project_id for pt in db.query(ProjectToTag).filter(ProjectToTag.tag_id.in_(tag_ids)).all()]
+                    if project_ids:
+                        query = query.filter(Project.id.in_(project_ids))
+                    else:
+                        # 如果没有匹配的项目，返回空结果
+                        return {
+                            'success': True,
+                            'data': {
+                                'projects': [],
+                                'pagination': {
+                                    'page': page,
+                                    'per_page': per_page,
+                                    'total': 0,
+                                    'pages': 0
+                                }
+                            }
+                        }
+                
             # 排序
-            query = query.order_by(Project.update_time.desc())
+            from sqlalchemy import desc
+            query = query.order_by(desc(Project.update_time))
             
             # 分页
             total = query.count()
-            projects = query.paginate(page, per_page)
+            projects = query.offset((page - 1) * per_page).limit(per_page).all()
             
             # 格式化结果
             result = []
             for project in projects:
+                # 获取项目标签
                 project_tags = [tag.name for tag in project.tags]
                 result.append({
                     'id': project.id,
@@ -231,6 +287,9 @@ class ProjectManager:
         except Exception as e:
             logger.error(f'获取项目列表失败: {str(e)}')
             return {'success': False, 'message': f'获取项目列表失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def get_project(project_id):
@@ -243,7 +302,11 @@ class ProjectManager:
             dict: 项目详情
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = next(get_db())
+            # 获取项目
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return {'success': False, 'message': '项目不存在'}
             
             # 获取项目标签
             project_tags = [tag.name for tag in project.tags]
@@ -283,6 +346,9 @@ class ProjectManager:
         except Exception as e:
             logger.error(f'获取项目详情失败: {str(e)}')
             return {'success': False, 'message': f'获取项目详情失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def get_tags():
@@ -292,8 +358,12 @@ class ProjectManager:
             list: 标签列表
         """
         try:
-            tags = ProjectTag.select().order_by(ProjectTag.name)
-            return {'success': True, 'data': [{'id': tag.id, 'name': tag.name} for tag in tags]}
+            db = next(get_db())
+            try:
+                tags = db.query(ProjectTag).order_by(ProjectTag.name).all()
+                return {'success': True, 'data': [{'id': tag.id, 'name': tag.name} for tag in tags]}
+            finally:
+                db.close()
         except Exception as e:
             logger.error(f'获取标签列表失败: {str(e)}')
             return {'success': False, 'message': f'获取标签列表失败: {str(e)}'}
@@ -306,7 +376,10 @@ class ProjectManager:
             project_id: 项目ID
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = get_db()
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return
             project_path = os.path.join(PROJECTS_ROOT, project.name)
             
             # 确保项目目录存在
@@ -324,25 +397,28 @@ class ProjectManager:
             detected_work_path = ProjectManager._detect_work_path(project_path)
             if detected_work_path and project.work_path == '/':
                 project.work_path = detected_work_path
-                project.save()
             
             # 更新项目状态
             project.status = 'ready'
             project.update_time = datetime.now()
-            project.save()
+            db.commit()
             
         except Exception as e:
             error_msg = f'项目导入失败: {str(e)}'
             logger.error(error_msg)
             # 更新项目状态为失败
             try:
-                project = Project.get_by_id(project_id)
-                project.status = 'failed'
-                project.error_message = str(e)
-                project.update_time = datetime.now()
-                project.save()
+                project = db.query(Project).filter(Project.id == project_id).first()
+                if project:
+                    project.status = 'failed'
+                    project.error_message = str(e)
+                    project.update_time = datetime.now()
+                    db.commit()
             except:
                 pass
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def _handle_zip_import(project, project_path):
@@ -377,7 +453,6 @@ class ProjectManager:
             repo_url = project.source_url
             if project.git_username and project.git_password:
                 # 构建带认证信息的URL
-                from urllib.parse import urlparse, urlunparse
                 parsed_url = urlparse(repo_url)
                 new_netloc = f'{project.git_username}:{project.git_password}@{parsed_url.netloc}'
                 repo_url = urlunparse(parsed_url._replace(netloc=new_netloc))
@@ -416,18 +491,45 @@ class ProjectManager:
         return None
     
     @staticmethod
-    def _add_tags_to_project(project_id, tags):
+    def _add_tags_to_project(project_id, tags, db=None):
         """为项目添加标签
         
         参数:
             project_id: 项目ID
             tags: 标签列表
+            db: 数据库会话（如果外部提供）
         """
-        for tag_name in tags:
-            # 获取或创建标签
-            tag, created = ProjectTag.get_or_create(name=tag_name)
-            # 添加项目和标签的关联
-            ProjectToTag.get_or_create(project=project_id, tag=tag)
+        need_close = False
+        if db is None:
+            db = next(get_db())
+            need_close = True
+        
+        try:
+            for tag_name in tags:
+                # 获取或创建标签
+                tag = db.query(ProjectTag).filter(ProjectTag.name == tag_name).first()
+                if not tag:
+                    tag = ProjectTag(name=tag_name)
+                    db.add(tag)
+                    db.commit()
+                    db.refresh(tag)
+                
+                # 添加项目和标签的关联
+                existing = db.query(ProjectToTag).filter(
+                    ProjectToTag.project_id == project_id,
+                    ProjectToTag.tag_id == tag.id
+                ).first()
+                if not existing:
+                    project_tag = ProjectToTag(project_id=project_id, tag_id=tag.id)
+                    db.add(project_tag)
+            
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            if need_close:
+                db.close()
     
     @staticmethod
     def upload_project_zip(project_id, zip_file):
@@ -441,7 +543,10 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = get_db()
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return {'success': False, 'message': '项目不存在'}
             project_path = os.path.join(PROJECTS_ROOT, project.name)
             
             # 创建临时目录保存ZIP文件
@@ -459,12 +564,17 @@ class ProjectManager:
             detected_work_path = ProjectManager._detect_work_path(project_path)
             if detected_work_path and project.work_path == '/':
                 project.work_path = detected_work_path
-                project.save()
+                db.commit()
             
             return {'success': True, 'message': '项目文件上传成功'}
         except Exception as e:
+            if 'db' in locals():
+                db.rollback()
             logger.error(f'上传项目文件失败: {str(e)}')
             return {'success': False, 'message': f'上传项目文件失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
     
     @staticmethod
     def get_project_file(project_id, file_path):
@@ -478,7 +588,10 @@ class ProjectManager:
             dict: 文件内容
         """
         try:
-            project = Project.get_by_id(project_id)
+            db = next(get_db())
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return {'success': False, 'message': '项目不存在'}
             full_path = os.path.join(PROJECTS_ROOT, project.name, file_path.lstrip('/'))
             
             # 检查文件是否存在且在项目目录内
@@ -495,6 +608,9 @@ class ProjectManager:
         except Exception as e:
             logger.error(f'读取文件失败: {str(e)}')
             return {'success': False, 'message': f'读取文件失败: {str(e)}'}
+        finally:
+            if 'db' in locals():
+                db.close()
 
 # 初始化ProjectManager实例
 project_manager = ProjectManager()

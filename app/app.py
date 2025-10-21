@@ -11,6 +11,9 @@ import logging
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+# 导入API路由
+from app.api.routes import app
+
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +28,6 @@ logger = logging.getLogger('python_envs')
 def main():
     """主函数，初始化并启动应用"""
     try:
-        # 导入API路由
-        from app.api.routes import app
         
         # 启动Flask应用
         logger.info("启动Python虚拟环境管理服务...")

@@ -11,8 +11,8 @@ import threading
 import subprocess
 import requests
 from datetime import datetime
-from queue import Queue
-from app.models.db import db, PythonVersion
+from queue import Queue, Empty, Full
+from app.db import get_db, PythonVersion
 from app.utils.tools import ensure_dir_exists
 
 # 配置日志
@@ -24,10 +24,8 @@ PYTHON_VERSIONS_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirn
 # ensure_dir_exists(PYTHON_VERSIONS_ROOT)
 
 # 下载队列和锁，从routes模块中导入
-import threading
 version_queues = {}
 version_queues_lock = threading.Lock()
-from queue import Empty, Full
 
 class PythonVersionManager:
     """Python版本管理类
@@ -47,19 +45,29 @@ class PythonVersionManager:
             dict: 操作结果
         """
         try:
-            # 检查是否已存在相同版本
-            existing_version = PythonVersion.get_or_none(PythonVersion.version == version)
-            if existing_version:
-                return {'success': False, 'message': f'Python版本 {version} 已存在'}
-            
-            # 创建PythonVersion记录
-            new_version = PythonVersion.create(
-                version=version,
-                status='pending',
-                download_url=download_url,
-                create_time=datetime.now(),
-                update_time=datetime.now()
-            )
+            db = get_db()
+            try:
+                # 检查是否已存在相同版本
+                existing_version = db.query(PythonVersion).filter(PythonVersion.version == version).first()
+                if existing_version:
+                    return {'success': False, 'message': f'Python版本 {version} 已存在'}
+                
+                # 创建PythonVersion记录
+                new_version = PythonVersion(
+                    version=version,
+                    status='pending',
+                    download_url=download_url,
+                    create_time=datetime.now(),
+                    update_time=datetime.now()
+                )
+                db.add(new_version)
+                db.commit()
+                db.refresh(new_version)
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 创建下载队列
             with version_queues_lock:
@@ -83,15 +91,26 @@ class PythonVersionManager:
             download_url: 下载地址（可选）
         """
         try:
-            # 获取版本信息，如果没有提供version和download_url，则从数据库中获取
-            version_model = PythonVersion.get_by_id(version_id)
-            if not version:
-                version = version_model.version
-            if not download_url:
-                download_url = version_model.download_url
-            version_model.status = 'downloading'
-            version_model.update_time = datetime.now()
-            version_model.save()
+            db = get_db()
+            try:
+                # 获取版本信息，如果没有提供version和download_url，则从数据库中获取
+                version_model = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+                if not version_model:
+                    raise ValueError(f'找不到版本ID为 {version_id} 的Python版本')
+                
+                if not version:
+                    version = version_model.version
+                if not download_url:
+                    download_url = version_model.download_url
+                
+                version_model.status = 'downloading'
+                version_model.update_time = datetime.now()
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 记录日志到队列
             PythonVersionManager._log_to_queue(version_id, f'开始下载Python版本 {version}')
@@ -111,9 +130,18 @@ class PythonVersionManager:
             
             # 解压文件
             PythonVersionManager._log_to_queue(version_id, '下载完成，开始解压文件')
-            version_model.status = 'installing'
-            version_model.update_time = datetime.now()
-            version_model.save()
+            db = get_db()
+            try:
+                version_model = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+                if version_model:
+                    version_model.status = 'installing'
+                    version_model.update_time = datetime.now()
+                    db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             extract_dir = os.path.join(temp_dir, f'Python-{version}')
             try:
@@ -162,10 +190,19 @@ class PythonVersionManager:
                 return
             
             # 更新数据库记录
-            version_model.status = 'ready'
-            version_model.install_path = install_path
-            version_model.update_time = datetime.now()
-            version_model.save()
+            db = get_db()
+            try:
+                version_model = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+                if version_model:
+                    version_model.status = 'ready'
+                    version_model.install_path = install_path
+                    version_model.update_time = datetime.now()
+                    db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 清理临时文件
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -211,12 +248,14 @@ class PythonVersionManager:
             error_message: 错误消息
             temp_dir: 临时目录路径，可选
         """
+        db = get_db()
         try:
-            version = PythonVersion.get_by_id(version_id)
-            version.status = 'failed'
-            version.error_message = error_message
-            version.update_time = datetime.now()
-            version.save()
+            version = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+            if version:
+                version.status = 'failed'
+                version.error_message = error_message
+                version.update_time = datetime.now()
+                db.commit()
             
             PythonVersionManager._log_to_queue(version_id, f'Python版本 {version.version}: {error_message}')
         except:
@@ -274,7 +313,11 @@ class PythonVersionManager:
         返回:
             list: PythonVersion对象列表
         """
-        return list(PythonVersion.select())
+        db = get_db()
+        try:
+            return db.query(PythonVersion).all()
+        finally:
+            db.close()
     
     @staticmethod
     def set_default_version(version_id):
@@ -287,17 +330,25 @@ class PythonVersionManager:
             dict: 操作结果
         """
         try:
-            version = PythonVersion.get_by_id(version_id)
-            
-            # 检查版本是否已安装完成
-            if version.status != 'ready':
-                return {'success': False, 'message': f'Python版本 {version.version} 尚未安装完成，无法设置为默认版本'}
-            
-            # 取消之前的默认版本
-            with db.atomic():
-                PythonVersion.update(is_default=False).execute()
-                version.is_default = True
-                version.save()
+            db = get_db()
+            try:
+                version = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+                if not version:
+                    return {'success': False, 'message': f'找不到版本ID为 {version_id} 的Python版本'}
+                
+                # 检查版本是否已安装完成
+                if version.status != 'ready':
+                    return {'success': False, 'message': f'Python版本 {version.version} 尚未安装完成，无法设置为默认版本'}
+                
+                # 取消之前的默认版本并设置新的默认版本
+                with db.begin():
+                    db.query(PythonVersion).update({PythonVersion.is_default: False})
+                    version.is_default = True
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             return {'success': True, 'message': f'已将Python版本 {version.version} 设置为默认版本'}
         except Exception as e:
@@ -315,23 +366,33 @@ class PythonVersionManager:
             dict: 操作结果
         """
         try:
-            version = PythonVersion.get_by_id(version_id)
-            
-            # 检查是否是默认版本
-            if version.is_default:
-                return {'success': False, 'message': f'Python版本 {version.version} 是默认版本，无法删除'}
-            
-            # 检查是否有虚拟环境正在使用此版本
-            from app.models.db import PythonEnv
-            if PythonEnv.select().where(PythonEnv.python_version == version.version).exists():
-                return {'success': False, 'message': f'Python版本 {version.version} 正在被虚拟环境使用，无法删除'}
-            
-            # 删除安装文件
-            if version.install_path and os.path.exists(version.install_path):
-                shutil.rmtree(version.install_path, ignore_errors=True)
-            
-            # 删除数据库记录
-            version.delete_instance()
+            db = get_db()
+            try:
+                version = db.query(PythonVersion).filter(PythonVersion.id == version_id).first()
+                if not version:
+                    return {'success': False, 'message': f'找不到版本ID为 {version_id} 的Python版本'}
+                
+                # 检查是否是默认版本
+                if version.is_default:
+                    return {'success': False, 'message': f'Python版本 {version.version} 是默认版本，无法删除'}
+                
+                # 检查是否有虚拟环境正在使用此版本
+                from app.db import PythonEnv
+                if db.query(PythonEnv).filter(PythonEnv.python_version == version.version).first() is not None:
+                    return {'success': False, 'message': f'Python版本 {version.version} 正在被虚拟环境使用，无法删除'}
+                
+                # 删除安装文件
+                if version.install_path and os.path.exists(version.install_path):
+                    shutil.rmtree(version.install_path, ignore_errors=True)
+                
+                # 删除数据库记录
+                db.delete(version)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                raise e
+            finally:
+                db.close()
             
             # 清理队列
             with version_queues_lock:
@@ -354,10 +415,20 @@ class PythonVersionManager:
             str: Python可执行文件路径或None
         """
         try:
-            if version:
-                python_version = PythonVersion.get_or_none(PythonVersion.version == version, PythonVersion.status == 'ready')
-            else:
-                python_version = PythonVersion.get_or_none(PythonVersion.is_default == True, PythonVersion.status == 'ready')
+            db = get_db()
+            try:
+                if version:
+                    python_version = db.query(PythonVersion).filter(
+                        PythonVersion.version == version,
+                        PythonVersion.status == 'ready'
+                    ).first()
+                else:
+                    python_version = db.query(PythonVersion).filter(
+                        PythonVersion.is_default == True,
+                        PythonVersion.status == 'ready'
+                    ).first()
+            finally:
+                db.close()
             
             if python_version and python_version.install_path:
                 return os.path.join(python_version.install_path, 'bin', 'python3')

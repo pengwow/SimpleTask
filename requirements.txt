@@ -1,8 +1,5 @@
-# Flask web框架
-Flask
-
-# 数据库ORM
-peewee
+# web框架
+fastapi
 
 # 虚拟环境管理
 envbuilder
@@ -10,14 +7,8 @@ envbuilder
 # 系统监控psutil
 psutil
 
-# 数据库迁移工具
-peewee-migrate
-
 # 日志管理
 gunicorn
-
-# API文档
-swagger-ui-py
 
 # 测试框架
 pytest

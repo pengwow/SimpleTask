@@ -17,3 +17,8 @@ service:
 logging:
   level: 'INFO'
   file: 'python_envs.log'
+
+# API设置
+api:
+  # API基础URL，如果不设置则会自动使用 http://localhost:{port}/api
+  base_url: 'http://localhost:5001/api'

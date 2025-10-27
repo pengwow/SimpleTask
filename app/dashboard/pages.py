@@ -10,10 +10,12 @@ from datetime import datetime
 from nicegui import app, ui, Client
 import httpx
 
+from app.config.config_manager import config_manager
+
 logger = logging.getLogger('python_envs')
 
-# API基础URL
-API_BASE_URL = '/api'
+# API基础URL - 从配置管理器获取
+API_BASE_URL = config_manager.get_api_base_url()
 
 
 # 根路径重定向到仪表板
@@ -225,6 +227,9 @@ class DashboardUI:
                 columns=[
                     {'name': 'id', 'label': 'ID', 'field': 'id', 'required': True},
                     {'name': 'name', 'label': '任务名称', 'field': 'name', 'required': True},
+                    {'name': 'description', 'label': '描述', 'field': 'description', 'required': False},
+                    {'name': 'python_env', 'label': 'Python环境', 'field': 'python_env', 'required': False},
+                    {'name': 'schedule_type', 'label': '调度类型', 'field': 'schedule_type', 'required': False},
                     {'name': 'status', 'label': '状态', 'field': 'status', 'required': True},
                     {'name': 'actions', 'label': '操作', 'field': 'actions', 'required': True},
                 ],
@@ -233,21 +238,75 @@ class DashboardUI:
         
         # 加载任务列表
         async def load_tasks():
-            # 模拟数据
-            tasks = [
-                {'id': 1, 'name': '备份数据库', 'status': 'running', 'actions': '操作按钮'},
-                {'id': 2, 'name': '清理日志', 'status': 'idle', 'actions': '操作按钮'}
-            ]
-            # 为每行添加操作按钮
-            for task in tasks:
-                with ui.row() as buttons:
-                    if task['status'] == 'running':
-                        ui.button('暂停', on_click=lambda t=task: pause_task(t['id']))
-                    else:
-                        ui.button('启动', on_click=lambda t=task: start_task(t['id']))
-                    ui.button('查看日志', on_click=lambda t=task: view_task_logs(t['id']))
-                task['actions'] = buttons
-            tasks_table.rows = tasks
+            try:
+                # 调用API接口获取任务数据
+                data = await DashboardUI.fetch_api_data('/tasks')
+                
+                # 处理API响应
+                tasks = []
+                if isinstance(data, dict):
+                    # API返回包含data字段的对象
+                    if 'data' in data and isinstance(data['data'], list):
+                        # 从data字段中提取任务列表
+                        for task in data['data']:
+                            # 转换为字典格式，确保可序列化
+                            task_dict = {
+                                'id': task.id,
+                                'name': task.name,
+                                'status': 'running' if task.is_active else 'idle',
+                                'description': task.description or '',
+                                'python_env': task.python_env.name if task.python_env else '',
+                                'schedule_type': task.schedule_type,
+                                'next_run_time': getattr(task, 'next_run_time', ''),
+                                'actions': ''
+                            }
+                            tasks.append(task_dict)
+                elif isinstance(data, list):
+                    # API直接返回任务列表
+                    for task in data:
+                        task_dict = {
+                            'id': task.id if hasattr(task, 'id') else task.get('id'),
+                            'name': task.name if hasattr(task, 'name') else task.get('name', ''),
+                            'status': 'running' if (hasattr(task, 'is_active') and task.is_active) else 'idle',
+                            'description': task.description if hasattr(task, 'description') else task.get('description', ''),
+                            'actions': ''
+                        }
+                        tasks.append(task_dict)
+                
+                # 为每行添加操作按钮
+                for task in tasks:
+                    with ui.row() as buttons:
+                        if task['status'] == 'running':
+                            ui.button('暂停', on_click=lambda t=task: pause_task(t['id']))
+                        else:
+                            ui.button('启动', on_click=lambda t=task: start_task(t['id']))
+                        ui.button('查看日志', on_click=lambda t=task: view_task_logs(t['id']))
+                    task['actions'] = buttons
+                
+                # 更新表格数据
+                tasks_table.rows = tasks
+                
+                if not tasks:
+                    ui.notify('暂无任务数据', type='info')
+                    
+            except Exception as e:
+                ui.notify(f'加载任务失败: {str(e)}', type='negative')
+                logger.error(f'加载任务失败: {str(e)}')
+                # 使用模拟数据作为降级方案
+                tasks = [
+                    {'id': 1, 'name': '备份数据库', 'status': 'running', 'actions': '操作按钮'},
+                    {'id': 2, 'name': '清理日志', 'status': 'idle', 'actions': '操作按钮'}
+                ]
+                # 为每行添加操作按钮
+                for task in tasks:
+                    with ui.row() as buttons:
+                        if task['status'] == 'running':
+                            ui.button('暂停', on_click=lambda t=task: pause_task(t['id']))
+                        else:
+                            ui.button('启动', on_click=lambda t=task: start_task(t['id']))
+                        ui.button('查看日志', on_click=lambda t=task: view_task_logs(t['id']))
+                    task['actions'] = buttons
+                tasks_table.rows = tasks
         
         async def start_task(task_id):
             # 这里应该调用API启动任务
@@ -286,30 +345,291 @@ class DashboardUI:
                 columns=[
                     {'name': 'id', 'label': 'ID', 'field': 'id', 'required': True},
                     {'name': 'name', 'label': '项目名称', 'field': 'name', 'required': True},
+                    {'name': 'work_path', 'label': '工作目录', 'field': 'work_path', 'required': True},
                     {'name': 'description', 'label': '描述', 'field': 'description', 'required': True},
+                    {'name': 'tags', 'label': '标签', 'field': 'tags', 'required': True},
+                    {'name': 'tasks_count', 'label': '任务数量', 'field': 'tasks_count', 'required': True},
                     {'name': 'actions', 'label': '操作', 'field': 'actions', 'required': True},
                 ],
                 rows=[]
             ).classes('w-full')
+            projects_table.add_slot('body-cell-actions', '''
+            <q-td key="actions" :props="props">
+                <q-btn flat dense round icon="edit" color="primary"
+                    @click="$parent.$emit('edit', props.row)" />
+                <q-btn flat dense round icon="delete" color="negative"
+                    @click="$parent.$emit('delete', props.row)" />
+            </q-td>
+            ''')
+
+            projects_table.on('edit', lambda e: show_project_edit_dialog(e.args))
+            projects_table.on('delete', lambda e: show_project_delete_dialog(e.args))
+
+        async def show_project_edit_dialog(project):
+            print(project)
+            with ui.dialog() as dialog, ui.card():
+                ui.label('编辑项目').classes('text-xl font-bold mb-4')
+                with ui.column().classes('space-y-2'):
+                    ui.input('项目名称', value=project['name']).bind_value(project, 'name')
+                    ui.input('描述', value=project['description']).bind_value(project, 'description')
+                with ui.row().classes('justify-end'):
+                    ui.button('取消', on_click=dialog.close)
+                    ui.button('保存', on_click=lambda: save_project_changes(project, dialog))
+                dialog.open()
+
+        async def save_project_changes(project, dialog: ui.dialog):
+            # 这里应该调用API保存项目更改
+            ui.notify(f'保存项目: {project["name"]}', type='positive', position='top')
+            await load_projects()
+            dialog.close()
+
+        async def open_create_project_dialog():
+            # 初始化项目数据
+            project = {
+                'name': '',
+                'work_path': '/',
+                'description': '',
+                'tags': [],
+                'source_type': 'git',  # 默认Git仓库
+                'git_url': 'https://github.com/username/repository.git',
+                'git_branch': 'main',
+                'git_username': '',
+                'git_password': '',
+                'uploaded_file': None
+            }
+            
+            # 使用可绑定的引用来存储组件
+            class Ref:
+                def __init__(self):
+                    self.value = None
+            
+            tag_input_ref = Ref()
+            tags_container_ref = Ref()
+            source_area_ref = Ref()
+            
+            # 处理标签添加
+            def add_tag():
+                
+                if tag_input_ref.value:
+                    tag_value = tag_input_ref.value.get_value().strip()
+                    if tag_value and tag_value not in project['tags']:
+                        project['tags'].append(tag_value)
+                        tag_input_ref.value.set_value('')  # 清空输入框
+                        update_tags_display()
+            
+            # 处理标签删除
+            def remove_tag(tag_to_remove):
+                if tag_to_remove in project['tags']:
+                    project['tags'].remove(tag_to_remove)
+                    update_tags_display()
+
+            # 更新标签显示
+            def update_tags_display():
+                if tags_container_ref.value:
+                    # 直接清除并重建内容
+                    tags_container_ref.value.clear()
+                    # 创建行容器
+                    def add_chip():
+                        with chips:
+                            ui.chip(label_input.value, icon='label', color='silver', removable=True)
+                        label_input.value = ''
+                    label_input = ui.input('添加标签').on('keydown.enter', add_chip)
+                    with label_input.add_slot('append'):
+                        ui.button(icon='add', on_click=add_chip).props('round dense flat')
+                    label_input = ui.input('添加标签').on('keydown.enter', add_chip)
+                    with ui.row().classes('gap-0') as chips:
+                        pass
+            # 表单验证函数
+            def validate_form():
+                # 检查必填项
+                if not project['name'].strip():
+                    ui.notify('请输入项目名称', type='negative')
+                    return False
+                if not project['work_path'].strip():
+                    ui.notify('请输入工作路径', type='negative')
+                    return False
+                # 根据项目来源检查相应字段
+                if project['source_type'] == 'zip' and not project['uploaded_file']:
+                    ui.notify('请上传ZIP文件', type='negative')
+                    return False
+                elif project['source_type'] == 'git' and not project['git_url'].strip():
+                    ui.notify('请输入Git仓库URL', type='negative')
+                    return False
+                # 检查工作路径是否包含中文字符
+                if any('\u4e00' <= c <= '\u9fff' for c in project['work_path']):
+                    ui.notify('工作路径不能包含中文字符', type='negative')
+                    return False
+                return True
+            
+            # 根据项目来源更新输入区域
+            def update_source_area():
+                if source_area_ref.value:
+                    with source_area_ref.value:
+                        source_area_ref.value.clear()
+                        if project['source_type'] == 'zip':
+                            # ZIP上传区域
+                            with ui.card().classes('border-dashed border-2 border-gray-300 p-8 text-center rounded-lg'):
+                                ui.icon('upload').classes('text-4xl text-gray-400 mb-2')
+                                ui.label('拖拽ZIP文件到此，或点击选择').classes('mb-2')
+                                upload = ui.upload(on_upload=lambda e: handle_file_upload(e, project))
+                                upload.props('accept=".zip" label="点击上传"')
+                                if project['uploaded_file']:
+                                    ui.label(f'已选择文件: {project["uploaded_file"]}').classes('text-green-600 mt-2')
+                        else:
+                            # Git仓库输入区域
+                            with ui.column().classes('space-y-3'):
+                                with ui.column().classes('space-y-1'):
+                                    ui.label('Git仓库地址 *').classes('text-sm font-medium')
+                                    ui.input().classes('w-full').bind_value(project, 'git_url')
+                                with ui.column().classes('space-y-1'):
+                                    ui.label('分支').classes('text-sm font-medium')
+                                    ui.input().classes('w-full').bind_value(project, 'git_branch')
+                                with ui.column().classes('space-y-1'):
+                                    ui.label('用户名').classes('text-sm font-medium')
+                                    ui.input().classes('w-full').props('placeholder="Git用户名 (可选)"').bind_value(project, 'git_username')
+                                with ui.column().classes('space-y-1'):
+                                    ui.label('密码').classes('text-sm font-medium')
+                                    ui.input(password=True).classes('w-full').props('placeholder="Git密码 (可选)"').bind_value(project, 'git_password')
+                                ui.label('请输入Git仓库的访问凭证').classes('text-xs text-gray-500 mt-1')
+            
+            # 处理文件上传
+            def handle_file_upload(event, project):
+                if event.name:
+                    project['uploaded_file'] = event.name
+                    update_source_area()
+            
+            # 创建对话框
+            with ui.dialog() as dialog, ui.card().classes('w-full max-h-[80vh]'):
+
+                # 标题
+                ui.label('新项目').classes('text-xl font-bold mb-4')
+                
+                # 添加滚动容器，包裹所有表单内容
+                with ui.scroll_area().classes('h-[calc(80vh-120px)] w-full'):
+                    # 表单容器
+                    # 项目名称
+                    ui.label('项目名称 *').classes('text-sm font-medium')
+                    ui.input().classes('w-full').props('placeholder="请输入项目名称"').bind_value(project, 'name')
+                    
+                    # 工作路径
+                    ui.label('工作路径 *').classes('text-sm font-medium')
+                    ui.input(value='/').classes('w-full').props('placeholder="/project_name"').bind_value(project, 'work_path')
+                    ui.label('工作路径建议为默认/,即不需要修改').classes('text-xs text-gray-500')
+                    
+                    # 描述
+                    ui.label('描述').classes('text-sm font-medium')
+                    ui.textarea().classes('w-full').props('placeholder="请输入项目描述"').bind_value(project, 'description')
+                    
+                    # 标签
+                    ui.input_chips('标签', value=['Pringles', 'Doritos', "Lay's"])
+
+                    # 项目来源选择
+                    with ui.tabs().classes('w-full flex justify-between') as tabs:
+                        git_tab = ui.tab('git', label='Git仓库', icon='fork_left').classes('w-1/2 text-center')
+                        zip_tab = ui.tab('zip', label='ZIP上传', icon='folder_zip').classes('w-1/2 text-center')
+                    with ui.tab_panels(tabs, value=git_tab).classes('w-full'):
+                        with ui.tab_panel(zip_tab):
+                            print('zip_tab')
+                            # ZIP上传区域
+                            with ui.card().classes('border-dashed border-2 border-gray-300 p-8 text-center rounded-lg'):
+                                ui.icon('upload').classes('text-4xl text-gray-400 mb-2')
+                                ui.label('拖拽ZIP文件到此，或点击选择').classes('mb-2')
+                                upload = ui.upload(on_upload=lambda e: handle_file_upload(e, project))
+                                upload.props('accept=".zip" label="点击上传"')
+                                if project['uploaded_file']:
+                                    ui.label(f'已选择文件: {project["uploaded_file"]}').classes('text-green-600 mt-2')
+                        with ui.tab_panel(git_tab):
+                            print('git_tab')
+                            ui.label('Git仓库地址 *').classes('text-sm font-medium')
+                            ui.input().classes('w-full').bind_value(project, 'git_url')
+
+                            ui.label('分支').classes('text-sm font-medium')
+                            ui.input().classes('w-full').bind_value(project, 'git_branch')
+
+                            ui.label('用户名').classes('text-sm font-medium')
+                            ui.input().classes('w-full').props('placeholder="Git用户名 (可选)"').bind_value(project, 'git_username')
+
+                            ui.label('密码').classes('text-sm font-medium')
+                            ui.input(password=True).classes('w-full').props('placeholder="Git密码 (可选)"').bind_value(project, 'git_password')
+                            ui.label('请输入Git仓库的访问凭证').classes('text-xs text-gray-500 mt-1')
+                
+                # 操作按钮放在滚动容器外
+                with ui.row().classes('justify-end right-4 bottom-4'):
+                    ui.button('取消', on_click=dialog.close)
+                    ui.button('保存', on_click=lambda: save_project_changes(project, dialog) if validate_form() else None, color='primary')
+            
+                # 初始化显示
+                # update_source_area()
+            dialog.open()
+
+        # async def project_delete_dialog(project, dialog):
+        #     # 这里应该调用API保存项目更改
+        #     ui.notify(f'保存项目: {project["name"]}', type='positive')
+        #     await load_projects()
+        #     dialog.close()
         
         # 加载项目列表
         async def load_projects():
-            # 模拟数据
-            projects = [
-                {'id': 1, 'name': '项目A', 'description': '测试项目A', 'actions': '操作按钮'},
-                {'id': 2, 'name': '项目B', 'description': '测试项目B', 'actions': '操作按钮'}
-            ]
-            # 为每行添加操作按钮
+            # 调用API接口获取真实项目数据
+            data = await DashboardUI.fetch_api_data('/projects')
+            
+            # 处理API响应
+            projects = []
+            if isinstance(data, list):
+                # 如果API直接返回项目列表
+                projects = data
+            elif isinstance(data, dict) and 'data' in data:
+                # 如果API返回包含data字段的对象
+                if isinstance(data['data'], list):
+                    projects = data['data']
+                elif 'projects' in data['data']:
+                    projects = data['data']['projects']
+            
+            # 为每行添加操作按钮并准备表格数据
+            table_data = []
             for project in projects:
-                with ui.row() as buttons:
-                    ui.button('详情', on_click=lambda p=project: show_project_details(p))
-                project['actions'] = buttons
-            projects_table.rows = projects
+                # 准备表格行数据
+                row_data = {
+                    'id': project.get('id', ''),
+                    'name': project.get('name', ''),
+                    'description': project.get('description', ''),
+                    'work_path': project.get('work_path', ''),
+                    'tags': project.get('tags', ''),
+                    'tasks_count': project.get('tasks_count', ''),
+                }
+                table_data.append(row_data)
+            
+            # 更新表格数据
+            projects_table.rows = table_data
+            if not table_data:
+                ui.notify('暂无项目数据', type='info')
         
         async def show_project_details(project):
             with ui.dialog() as dialog, ui.card():
-                ui.label(f'项目详情: {project["name"]}').classes('text-xl font-bold mb-4')
-                # 显示项目详情
+                # 安全获取项目名称
+                project_name = project.get('name', '未知项目')
+                ui.label(f'项目详情: {project_name}').classes('text-xl font-bold mb-4')
+                
+                # 显示项目详细信息
+                with ui.column().classes('space-y-2'):
+                    ui.label(f'ID: {project.get("id", "")}')
+                    ui.label(f'描述: {project.get("description", "无描述")}')
+                    ui.label(f'状态: {project.get("status", "")}')
+                    ui.label(f'创建时间: {project.get("create_time", "")}')
+                    
+                    # 如果有标签信息，显示标签
+                    tags_info = ''
+                    if 'tags' in project:
+                        if isinstance(project['tags'], list):
+                            if project['tags'] and isinstance(project['tags'][0], dict):
+                                # 标签是对象列表
+                                tags_info = ', '.join([tag.get('name', '') for tag in project['tags']])
+                            else:
+                                # 标签是字符串列表
+                                tags_info = ', '.join(project['tags'])
+                    if tags_info:
+                        ui.label(f'标签: {tags_info}')
+                
                 dialog.open()
         
         ui.timer(0.1, load_projects, once=True)

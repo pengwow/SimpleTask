@@ -121,6 +121,25 @@ class ConfigManager:
     def reload_config(self) -> None:
         """重新加载配置文件"""
         self._load_config()
+    
+    def get_api_base_url(self) -> str:
+        """获取API基础URL
+        
+        Returns:
+            API基础URL字符串
+        """
+        # 尝试从配置中获取API基础URL，如果不存在则构建默认值
+        api_config = self.config.get('api', {})
+        base_url = api_config.get('base_url')
+        
+        # 如果配置中没有指定API基础URL，使用默认值
+        if not base_url:
+            # 获取服务端口
+            port = self.get_service_port()
+            # 构建默认API基础URL
+            base_url = f'http://localhost:{port}/api'
+        
+        return base_url
 
 # 创建全局配置管理器实例
 config_manager = ConfigManager()

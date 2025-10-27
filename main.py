@@ -98,11 +98,12 @@ if __name__ == "__main__":
     logger.info("启动Python虚拟环境管理服务...")
     logger.info("服务将在 http://localhost:5001 启动")
     logger.info("API文档地址: http://localhost:5001/docs")
+    logger.info("前端页面: http://localhost:5001/gui")
     logger.info("按 Ctrl+C 停止服务")
 
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=5001,
-        reload=False
+        reload=True
     )

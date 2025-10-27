@@ -439,6 +439,12 @@ async def delete_env(
     Raises:
         HTTPException: 当环境不存在时
     """
+    import os
+    import shutil
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
     env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
     if not env:
         raise HTTPException(status_code=404, detail="环境不存在")
@@ -446,12 +452,34 @@ async def delete_env(
     # 检查是否有相关任务在使用此环境
     # 这里应该添加实际检查逻辑
     
-    # 这里应该添加实际删除虚拟环境文件的逻辑
+    # 保存环境路径以便删除
+    env_path = env.path
     
+    # 实际删除虚拟环境文件的逻辑
+    if env_path and os.path.exists(env_path):
+        try:
+            # 删除虚拟环境目录
+            shutil.rmtree(env_path)
+            logger.info(f"成功删除虚拟环境文件: {env_path}")
+        except Exception as e:
+            logger.error(f"删除虚拟环境文件失败: {str(e)}")
+            # 即使文件删除失败，我们仍然继续删除数据库记录
+            # 但会在返回信息中说明
+            file_delete_error = str(e)
+        else:
+            file_delete_error = None
+    else:
+        file_delete_error = None
+    
+    # 删除数据库记录
     db.delete(env)
     db.commit()
     
-    return {"message": "环境删除成功"}
+    # 返回适当的消息
+    if file_delete_error:
+        return {"message": "环境数据库记录删除成功，但文件删除失败", "file_error": file_delete_error}
+    else:
+        return {"message": "环境删除成功"}
 
 @api_router.get("/envs/{env_id}/logs", response_model=List[EnvLogResponse])
 async def get_env_logs(
@@ -979,7 +1007,7 @@ async def get_tasks(
     
     # 应用分页
     offset = (page - 1) * per_page
-    tasks = query.order_by(Task.created_at.desc()).offset(offset).limit(per_page).all()
+    tasks = query.order_by(Task.create_time.desc()).offset(offset).limit(per_page).all()
     
     # 构建响应
     return {

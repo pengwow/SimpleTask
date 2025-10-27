@@ -27,8 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger('python_envs')
 
-# 虚拟环境根目录
-ENV_ROOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'envs')
+# 导入配置管理器
+from app.config.config_manager import config_manager
+
+# 从配置中获取虚拟环境根目录
+ENV_ROOT_DIR = config_manager.get_env_root_dir()
 
 # 确保目录存在
 def ensure_dir_exists(dir_path):

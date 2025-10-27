@@ -60,11 +60,11 @@ class DashboardUI:
         with ui.header(elevated=True).classes('items-center justify-between'):
             ui.label('任务管理系统').classes('text-2xl font-bold')
             with ui.row():
-                    ui.button('虚拟环境', on_click=lambda: ui.navigate.to('/environments'))
-                    ui.button('任务管理', on_click=lambda: ui.navigate.to('/tasks'))
-                    ui.button('项目管理', on_click=lambda: ui.navigate.to('/projects'))
-                    ui.dark_mode().bind_value(app.storage.user, 'dark_mode')
-                    ui.checkbox('深色模式').bind_value(app.storage.user, 'dark_mode')
+                ui.button('任务管理', on_click=lambda: ui.navigate.to('/tasks'))
+                ui.button('虚拟环境', on_click=lambda: ui.navigate.to('/environments'))
+                ui.button('项目管理', on_click=lambda: ui.navigate.to('/projects'))
+                ui.dark_mode().bind_value(app.storage.user, 'dark_mode')
+                    # ui.checkbox('深色模式').bind_value(app.storage.user, 'dark_mode')
     
         # 主内容区
         with ui.column().classes('w-full items-center gap-6 p-6'):
@@ -98,7 +98,7 @@ class DashboardUI:
                         {'name': 'status', 'label': '状态', 'field': 'status', 'required': True},
                     ],
                     rows=[]
-                )
+                ).classes('w-full')
         
         # 加载数据
         async def load_data():
@@ -130,18 +130,16 @@ class DashboardUI:
         with ui.header(elevated=True).classes('items-center justify-between'):
             ui.label('虚拟环境管理').classes('text-2xl font-bold')
             with ui.row():
-                    ui.button('返回仪表板', on_click=lambda: ui.navigate.to('/dashboard'))
-        
+                ui.button('返回仪表板', on_click=lambda: ui.navigate.to('/dashboard'))
         # 主内容区
         with ui.column().classes('w-full items-center gap-6 p-6'):
             # 操作按钮
             with ui.row().classes('w-full justify-between'):
                 ui.button('创建新环境', on_click=lambda: open_create_env_dialog())
-                ui.input(placeholder='搜索环境...').bind_value_to(ui.query('#env-table'), 'options.q')
+                # ui.input(placeholder='搜索环境...') # .bind_value_to(ui.query('#env-table'), 'options.q')
             
             # 环境列表
             env_table = ui.table(
-                id='env-table',
                 columns=[
                     {'name': 'id', 'label': 'ID', 'field': 'id', 'required': True},
                     {'name': 'name', 'label': '名称', 'field': 'name', 'required': True},
@@ -151,27 +149,29 @@ class DashboardUI:
                 ],
                 rows=[]
             ).classes('w-full')
+
+            
         
-        # 创建环境对话框
-        def open_create_env_dialog():
-            with ui.dialog() as dialog, ui.card():
-                ui.label('创建新虚拟环境').classes('text-xl font-bold mb-4')
-                with ui.column().classes('gap-4'):
-                    name_input = ui.input(label='环境名称')
-                    version_input = ui.input(label='Python版本')
-                    with ui.row().classes('justify-end gap-2'):
-                        ui.button('取消', on_click=dialog.close)
-                        ui.button('创建', on_click=lambda: create_env(name_input.value, version_input.value, dialog))
+        # # 创建环境对话框
+        # def open_create_env_dialog():
+        #     with ui.dialog() as dialog, ui.card():
+        #         ui.label('创建新虚拟环境').classes('text-xl font-bold mb-4')
+        #         with ui.column().classes('gap-4'):
+        #             name_input = ui.input(label='环境名称')
+        #             version_input = ui.input(label='Python版本')
+        #             with ui.row().classes('justify-end gap-2'):
+        #                 ui.button('取消', on_click=dialog.close)
+        #                 ui.button('创建', on_click=lambda: create_env(name_input.value, version_input.value, dialog))
         
-        async def create_env(name: str, version: str, dialog):
-            if not name or not version:
-                ui.notify('请填写所有字段', type='negative')
-                return
-            # 这里应该调用API创建环境
-            ui.notify(f'创建环境: {name}', type='positive')
-            dialog.close()
-            # 刷新列表
-            await load_envs()
+        # async def create_env(name: str, version: str, dialog):
+        #     if not name or not version:
+        #         ui.notify('请填写所有字段', type='negative')
+        #         return
+        #     # 这里应该调用API创建环境
+        #     ui.notify(f'创建环境: {name}', type='positive')
+        #     dialog.close()
+        #     # 刷新列表
+        #     await load_envs()
         
         # 加载环境列表
         async def load_envs():
@@ -188,16 +188,16 @@ class DashboardUI:
                 env['actions'] = buttons
             env_table.rows = envs
         
-        async def show_env_details(env):
-            with ui.dialog() as dialog, ui.card():
-                ui.label(f'环境详情: {env["name"]}').classes('text-xl font-bold mb-4')
-                # 显示环境详情
-                dialog.open()
+        # async def show_env_details(env):
+        #     with ui.dialog() as dialog, ui.card():
+        #         ui.label(f'环境详情: {env["name"]}').classes('text-xl font-bold mb-4')
+        #         # 显示环境详情
+        #         dialog.open()
         
-        async def delete_env(env_id):
-            # 这里应该调用API删除环境
-            ui.notify(f'删除环境: {env_id}', type='negative')
-            await load_envs()
+        # async def delete_env(env_id):
+        #     # 这里应该调用API删除环境
+        #     ui.notify(f'删除环境: {env_id}', type='negative')
+        #     await load_envs()
         
         ui.timer(0.1, load_envs, once=True)
     
@@ -214,7 +214,10 @@ class DashboardUI:
             ui.label('任务管理').classes('text-2xl font-bold')
             with ui.row():
                 ui.button('返回仪表板', on_click=lambda: ui.navigate.to('/dashboard'))
-        
+        # 操作按钮
+        with ui.row().classes('w-full'):
+            ui.button('创建新任务', on_click=lambda: open_create_task_dialog())
+            
         # 主内容区
         with ui.column().classes('w-full items-center gap-6 p-6'):
             # 任务列表
@@ -274,7 +277,8 @@ class DashboardUI:
             ui.label('项目管理').classes('text-2xl font-bold')
             with ui.row():
                 ui.button('返回仪表板', on_click=lambda: ui.navigate.to('/dashboard'))
-        
+        with ui.row().classes('w-full'):
+            ui.button('新建项目', on_click=lambda: open_create_project_dialog())
         # 主内容区
         with ui.column().classes('w-full items-center gap-6 p-6'):
             # 项目列表
@@ -309,3 +313,4 @@ class DashboardUI:
                 dialog.open()
         
         ui.timer(0.1, load_projects, once=True)
+        

@@ -1,0 +1,19 @@
+# SimpleTask配置文件
+
+# 环境设置
+environment:
+  # 虚拟环境根目录，默认在项目内的envs文件夹
+  # 可以修改为自定义路径，如：/data/virtualenvs
+  env_root_dir: '/Users/liupeng/workspace/backup/temp/envs'
+
+# 服务设置
+service:
+  # 服务端口
+  port: 5001
+  # 调试模式
+  debug: true
+
+# 日志设置
+logging:
+  level: 'INFO'
+  file: 'python_envs.log'

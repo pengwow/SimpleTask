@@ -7,6 +7,9 @@ envbuilder
 # 系统监控psutil
 psutil
 
+# YAML配置文件解析
+pyyaml
+
 # 日志管理
 gunicorn
 

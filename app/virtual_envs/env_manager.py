@@ -14,11 +14,16 @@ import subprocess
 from datetime import datetime
 from queue import Queue, Empty, Full
 
+# 导入配置管理器
+from app.config.config_manager import config_manager
+
 # 配置日志
 logger = logging.getLogger(__name__)
 
-# 设置虚拟环境根目录
-ENV_ROOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'envs')
+# 从配置中获取虚拟环境根目录
+ENV_ROOT_DIR = config_manager.get_env_root_dir()
+logger.info(f"虚拟环境根目录设置为: {ENV_ROOT_DIR}")
+
 # 注释掉自动创建目录的代码，按用户要求不自动创建目录
 # os.makedirs(ENV_ROOT_DIR, exist_ok=True)
 
@@ -57,6 +62,20 @@ def create_python_env(env_id):
             env.mirror_source_id = mirror.id
             db.commit()
             log_env(env_id, f'使用镜像源: {mirror.url}')
+        
+        # 检查并创建虚拟环境根目录
+        if not os.path.exists(ENV_ROOT_DIR):
+            try:
+                os.makedirs(ENV_ROOT_DIR, exist_ok=True)
+                log_env(env_id, f'创建虚拟环境根目录: {ENV_ROOT_DIR}')
+                logger.info(f'已创建虚拟环境根目录: {ENV_ROOT_DIR}')
+            except Exception as e:
+                log_env(env_id, f'创建虚拟环境根目录失败: {str(e)}', 'ERROR')
+                logger.error(f'创建虚拟环境根目录失败: {str(e)}')
+                env.status = 'failed'
+                env.update_time = datetime.now()
+                db.commit()
+                return
         
         # 创建虚拟环境
         python_executable = f'python{env.python_version.split(".")[0]}.{env.python_version.split(".")[1]}'

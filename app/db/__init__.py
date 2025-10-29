@@ -8,9 +8,7 @@ from .models import (
     PythonEnv,
     EnvLog,
     PythonVersion,
-    ProjectTag,
     Project,
-    project_to_tag,
     Task,
     TaskExecution,
     TaskLog
@@ -24,9 +22,7 @@ __all__ = [
     'PythonEnv',
     'EnvLog',
     'PythonVersion',
-    'ProjectTag',
     'Project',
-    'project_to_tag',
     'Task',
     'TaskExecution',
     'TaskLog'

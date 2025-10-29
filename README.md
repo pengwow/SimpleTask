@@ -28,8 +28,8 @@
 ## 技术栈
 
 - **后端框架**: Flask
-- **数据库**: SQLite3 + Peewee ORM
-- **前端集成**: 可与Dash框架集成
+- **数据库**: SQLite3
+- **前端集成**: nicegui
 - **虚拟化**: Python venv
 
 ## 安装部署

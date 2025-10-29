@@ -378,10 +378,59 @@ class DashboardUI:
                 dialog.open()
 
         async def save_project_changes(project, dialog: ui.dialog):
-            # 这里应该调用API保存项目更改
-            ui.notify(f'保存项目: {project["name"]}', type='positive', position='top')
-            await load_projects()
-            dialog.close()
+            try:
+                # 准备API请求数据
+                project_data = {
+                    "name": project["name"],
+                    "description": project["description"],
+                    "work_path": project["work_path"],
+                    "source_type": project["source_type"],
+                    "source_url": project["git_url"] if project["source_type"] == "git" else None,
+                    "branch": project["git_branch"] if project["source_type"] == "git" else None,
+                    "git_username": project["git_username"] if project["source_type"] == "git" else None,
+                    "git_password": project["git_password"] if project["source_type"] == "git" else None,
+                    "tags": project.get("tags", [])  # 直接使用标签列表
+                }
+                
+                # 直接使用httpx.AsyncClient发送POST请求
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
+                    response.raise_for_status()
+                    result = response.json()
+                
+                # 成功创建项目
+                ui.notify(f'成功创建项目: {project["name"]}', type='positive', position='top')
+                await load_projects()
+                dialog.close()
+                
+            except httpx.HTTPStatusError as e:
+                # 从响应中获取错误信息
+                error_detail = ""
+                try:
+                    error_data = e.response.json()
+                    if isinstance(error_data, dict):
+                        if "detail" in error_data:
+                            error_detail = error_data["detail"]
+                        elif "error" in error_data:
+                            error_detail = error_data["error"]
+                except:
+                    pass
+                
+                if e.response.status_code == 400:
+                    if error_detail:
+                        ui.notify(f'创建项目失败: {error_detail}', type='negative', position='top')
+                    elif "项目名称已存在" in str(e):
+                        ui.notify('创建项目失败: 项目名称已存在', type='negative', position='top')
+                    else:
+                        ui.notify('创建项目失败: 参数错误，请检查输入', type='negative', position='top')
+                elif e.response.status_code == 500:
+                    ui.notify('创建项目失败: 服务器内部错误', type='negative', position='top')
+                else:
+                    ui.notify(f'创建项目失败: HTTP错误 {e.response.status_code}', type='negative', position='top')
+                logger.error(f'HTTP错误: {str(e)}')
+            except Exception as e:
+                ui.notify(f'创建项目失败: {str(e)}', type='negative', position='top')
+                logger.error(f'创建项目失败: {str(e)}')
 
         async def open_create_project_dialog():
             # 初始化项目数据
@@ -407,38 +456,11 @@ class DashboardUI:
             tags_container_ref = Ref()
             source_area_ref = Ref()
             
-            # 处理标签添加
-            def add_tag():
-                
-                if tag_input_ref.value:
-                    tag_value = tag_input_ref.value.get_value().strip()
-                    if tag_value and tag_value not in project['tags']:
-                        project['tags'].append(tag_value)
-                        tag_input_ref.value.set_value('')  # 清空输入框
-                        update_tags_display()
+            # 标签处理已经通过input_chips组件直接处理
             
-            # 处理标签删除
-            def remove_tag(tag_to_remove):
-                if tag_to_remove in project['tags']:
-                    project['tags'].remove(tag_to_remove)
-                    update_tags_display()
+            # 标签删除已经通过input_chips组件直接处理
 
-            # 更新标签显示
-            def update_tags_display():
-                if tags_container_ref.value:
-                    # 直接清除并重建内容
-                    tags_container_ref.value.clear()
-                    # 创建行容器
-                    def add_chip():
-                        with chips:
-                            ui.chip(label_input.value, icon='label', color='silver', removable=True)
-                        label_input.value = ''
-                    label_input = ui.input('添加标签').on('keydown.enter', add_chip)
-                    with label_input.add_slot('append'):
-                        ui.button(icon='add', on_click=add_chip).props('round dense flat')
-                    label_input = ui.input('添加标签').on('keydown.enter', add_chip)
-                    with ui.row().classes('gap-0') as chips:
-                        pass
+            # 标签显示已经通过input_chips组件直接处理
             # 表单验证函数
             def validate_form():
                 # 检查必填项
@@ -521,7 +543,7 @@ class DashboardUI:
                     ui.textarea().classes('w-full').props('placeholder="请输入项目描述"').bind_value(project, 'description')
                     
                     # 标签
-                    ui.input_chips('标签', value=['Pringles', 'Doritos', "Lay's"])
+                    ui.input_chips('标签', value=[]).bind_value(project, 'tags')
 
                     # 项目来源选择
                     with ui.tabs().classes('w-full flex justify-between') as tabs:
@@ -588,13 +610,24 @@ class DashboardUI:
             # 为每行添加操作按钮并准备表格数据
             table_data = []
             for project in projects:
-                # 准备表格行数据
+                # 准备表格行数据，正确处理标签数据
+                tags = project.get('tags', [])
+                # 将标签列表转换为逗号分隔的字符串
+                tags_str = ''
+                if isinstance(tags, list):
+                    if tags and isinstance(tags[0], dict):
+                        # 如果标签是对象列表
+                        tags_str = ', '.join([tag.get('name', '') for tag in tags])
+                    else:
+                        # 如果标签是字符串列表
+                        tags_str = ', '.join(tags)
+                
                 row_data = {
                     'id': project.get('id', ''),
                     'name': project.get('name', ''),
                     'description': project.get('description', ''),
                     'work_path': project.get('work_path', ''),
-                    'tags': project.get('tags', ''),
+                    'tags': tags_str,  # 使用处理后的标签字符串
                     'tasks_count': project.get('tasks_count', ''),
                 }
                 table_data.append(row_data)
@@ -633,4 +666,75 @@ class DashboardUI:
                 dialog.open()
         
         ui.timer(0.1, load_projects, once=True)
+        
+        async def show_project_delete_dialog(project):
+            """显示项目删除确认对话框
+            
+            Args:
+                project: 要删除的项目对象
+            """
+            with ui.dialog() as dialog, ui.card():
+                # 对话框标题和提示信息
+                ui.label('删除项目确认').classes('text-xl font-bold mb-4')
+                ui.label(f'确定要删除项目「{project.get("name", "")}」吗？').classes('mb-4')
+                ui.label('此操作不可撤销，删除后数据将无法恢复。').classes('text-red-500 mb-6')
+                
+                # 操作按钮
+                with ui.row().classes('justify-end gap-4'):
+                    ui.button('取消', on_click=dialog.close)
+                    ui.button('删除', on_click=lambda: confirm_delete(project, dialog), color='negative')
+                
+                dialog.open()
+        
+        async def confirm_delete(project, dialog: ui.dialog):
+            """确认删除项目，调用API执行删除操作
+            
+            Args:
+                project: 要删除的项目对象
+                dialog: 对话框实例
+            """
+            try:
+                # 获取项目ID
+                project_id = project.get('id')
+                if not project_id:
+                    ui.notify('无法获取项目ID，删除失败', type='negative')
+                    dialog.close()
+                    return
+                
+                # 调用API删除项目
+                async with httpx.AsyncClient() as client:
+                    response = await client.delete(f"{API_BASE_URL}/projects/{project_id}")
+                    response.raise_for_status()
+                
+                # 删除成功，显示成功消息并重新加载项目列表
+                ui.notify(f'成功删除项目: {project.get("name", "")}', type='positive')
+                await load_projects()
+                dialog.close()
+                
+            except httpx.HTTPStatusError as e:
+                # 处理HTTP错误
+                error_detail = ""
+                try:
+                    error_data = e.response.json()
+                    if isinstance(error_data, dict):
+                        if "detail" in error_data:
+                            error_detail = error_data["detail"]
+                        elif "error" in error_data:
+                            error_detail = error_data["error"]
+                except:
+                    pass
+                
+                if e.response.status_code == 404:
+                    ui.notify(f'删除失败: 项目不存在', type='negative')
+                elif e.response.status_code == 400:
+                    ui.notify(f'删除失败: {error_detail or "参数错误"}', type='negative')
+                elif e.response.status_code == 500:
+                    ui.notify(f'删除失败: 服务器内部错误', type='negative')
+                else:
+                    ui.notify(f'删除失败: HTTP错误 {e.response.status_code}', type='negative')
+                logger.error(f'删除项目HTTP错误: {str(e)}')
+            except Exception as e:
+                # 处理其他异常
+                ui.notify(f'删除项目失败: {str(e)}', type='negative')
+                logger.error(f'删除项目失败: {str(e)}')
         

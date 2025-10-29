@@ -9,7 +9,7 @@ import sys
 from app.db.database import engine, Base, get_db
 from app.db.models import (
     MirrorSource, PythonEnv, EnvLog, PythonVersion,
-    ProjectTag, Project, Task, TaskExecution, TaskLog
+    Project, Task, TaskExecution, TaskLog
 )
 import logging
 
@@ -74,12 +74,6 @@ def insert_initial_data():
         for mirror_data in default_mirrors:
             mirror = MirrorSource(**mirror_data)
             db.add(mirror)
-        
-        # 添加默认标签
-        default_tags = ['Web开发', '数据科学', '自动化测试', 'DevOps', '机器学习']
-        for tag_name in default_tags:
-            tag = ProjectTag(name=tag_name)
-            db.add(tag)
         
         db.commit()
         logger.info("初始数据插入成功")

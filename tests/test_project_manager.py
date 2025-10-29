@@ -7,6 +7,7 @@
 
 import os
 import sys
+import json
 import unittest
 import tempfile
 import shutil
@@ -16,7 +17,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 导入项目管理模块和数据库模型
-from app.db import get_db, Project, ProjectTag, ProjectToTag
+from app.db import get_db, Project
 from app.projects.project_manager import ProjectManager, PROJECTS_ROOT
 from app.utils.tools import ensure_dir_exists
 
@@ -122,8 +123,8 @@ class TestProjectManager(unittest.TestCase):
         self.assertEqual(project.description, "已更新的项目")
         self.assertEqual(project.work_path, '/src')
         
-        # 验证标签是否已更新
-        project_tags = [tag.name for tag in project.tags]
+        # 验证标签是否已更新 - 修改为检查JSON解析后的标签
+        project_tags = json.loads(project.tags)
         self.assertIn("更新", project_tags)
         self.assertIn("测试", project_tags)
         

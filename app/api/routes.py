@@ -11,13 +11,13 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 
-from app.db import get_db, MirrorSource, PythonEnv, EnvLog, PythonVersion, Project, ProjectTag, Task, TaskExecution, TaskLog
+from app.db import get_db, MirrorSource, PythonEnv, EnvLog, PythonVersion, Project, Task, TaskExecution, TaskLog
 from app.virtual_envs.env_manager import create_python_env
 from app.schemas import (
     MirrorSourceCreate, MirrorSourceUpdate, MirrorSourceResponse,
     PythonEnvCreate, PythonEnvUpdate, PythonEnvResponse, PythonEnvWithDetails,
     PythonVersionCreate, PythonVersionResponse, SetDefaultVersion,
-    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectWithDetails, ProjectTagResponse,
+    ProjectCreate, ProjectUpdate, ProjectResponse, ProjectWithDetails,
     TaskCreate, TaskUpdate, TaskResponse, TaskWithDetails, TaskExecutionResponse, TaskExecutionWithDetails, TaskActionResponse,
     EnvLogResponse, TaskLogResponse
 )
@@ -51,6 +51,9 @@ async def get_projects(
     projects = db.query(Project).offset(skip).limit(limit).all()
     result = []
     for project in projects:
+        # 将JSON字符串转换为标签列表
+        tags_list = json.loads(project.tags) if project.tags else []
+        
         project_with_details = ProjectWithDetails(
             id=project.id,
             name=project.name,
@@ -65,7 +68,7 @@ async def get_projects(
             error_message=project.error_message,
             create_time=project.create_time,
             update_time=project.update_time,
-            tags=[ProjectTagResponse.from_orm(tag) for tag in project.tags],
+            tags=tags_list,
             tasks_count=len(project.tasks)
         )
         result.append(project_with_details)
@@ -93,14 +96,15 @@ async def create_project(
     if existing_project:
         raise HTTPException(status_code=400, detail="项目名称已存在")
     
-    # 创建项目
-    db_project = Project(**project_data.dict(exclude={'tag_ids'}))
-    db_project.status = 'pending'
+    # 创建项目数据字典，排除tags字段单独处理
+    project_dict = project_data.dict(exclude={'tags'})
     
-    # 添加标签关联
-    if project_data.tag_ids:
-        tags = db.query(ProjectTag).filter(ProjectTag.id.in_(project_data.tag_ids)).all()
-        db_project.tags = tags
+    # 将tags列表转换为JSON字符串
+    project_dict['tags'] = json.dumps(project_data.tags or [])
+    
+    # 创建项目
+    db_project = Project(**project_dict)
+    db_project.status = 'pending'
     
     db.add(db_project)
     db.commit()
@@ -134,6 +138,9 @@ async def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
+    # 将JSON字符串转换为标签列表
+    tags_list = json.loads(project.tags) if project.tags else []
+    
     return ProjectWithDetails(
         id=project.id,
         name=project.name,
@@ -148,7 +155,7 @@ async def get_project(
         error_message=project.error_message,
         create_time=project.create_time,
         update_time=project.update_time,
-        tags=[ProjectTagResponse.from_orm(tag) for tag in project.tags],
+        tags=tags_list,
         tasks_count=len(project.tasks)
     )
 
@@ -183,15 +190,15 @@ async def update_project(
     
     # 更新项目信息
     update_data = project_data.dict(exclude_unset=True)
-    tag_ids = update_data.pop('tag_ids', None)
+    
+    # 处理tags字段
+    tags = update_data.pop('tags', None)
+    if tags is not None:
+        # 将标签列表转换为JSON字符串
+        update_data['tags'] = json.dumps(tags)
     
     for field, value in update_data.items():
         setattr(project, field, value)
-    
-    # 更新标签关联
-    if tag_ids is not None:
-        tags = db.query(ProjectTag).filter(ProjectTag.id.in_(tag_ids)).all()
-        project.tags = tags
     
     project.update_time = datetime.now()
     db.commit()
@@ -285,21 +292,6 @@ async def get_project_file(
     # 这里应该添加实际读取文件的逻辑
     # 暂时返回模拟数据
     return {"content": "文件内容示例", "file_path": file_path}
-
-@api_router.get("/project_tags", response_model=List[ProjectTagResponse])
-async def get_project_tags(
-    db: Session = Depends(get_db)
-):
-    """获取所有项目标签
-    
-    Args:
-        db: 数据库会话
-        
-    Returns:
-        标签列表
-    """
-    tags = db.query(ProjectTag).all()
-    return tags
 
 # API接口定义 - 虚拟环境管理
 @api_router.get("/envs", response_model=List[PythonEnvResponse])

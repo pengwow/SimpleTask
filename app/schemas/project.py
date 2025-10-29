@@ -4,23 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-class ProjectTagBase(BaseModel):
-    """项目标签基础模型"""
-    name: str = Field(..., max_length=50, description="标签名称")
-
-
-class ProjectTagCreate(ProjectTagBase):
-    """创建项目标签的请求模型"""
-    pass
-
-
-class ProjectTagResponse(ProjectTagBase):
-    """项目标签响应模型"""
-    id: int = Field(..., description="标签ID")
-    create_time: datetime = Field(..., description="创建时间")
-    
-    class Config:
-        from_attributes = True
+# 移除了ProjectTag相关模型，标签将作为字符串列表存储
 
 
 class ProjectBase(BaseModel):
@@ -37,14 +21,14 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     """创建项目的请求模型"""
-    tag_ids: Optional[List[int]] = Field(default=[], description="标签ID列表")
+    tags: Optional[List[str]] = Field(default=[], description="标签列表")
 
 
 class ProjectUpdate(BaseModel):
     """更新项目的请求模型"""
     name: Optional[str] = Field(None, max_length=100, description="项目名称")
     description: Optional[str] = Field(None, description="项目描述")
-    tag_ids: Optional[List[int]] = Field(None, description="标签ID列表")
+    tags: Optional[List[str]] = Field(None, description="标签列表")
 
 
 class ProjectResponse(ProjectBase):
@@ -61,5 +45,5 @@ class ProjectResponse(ProjectBase):
 
 class ProjectWithDetails(ProjectResponse):
     """带详细信息的项目响应模型"""
-    tags: List[ProjectTagResponse] = Field(default=[], description="项目标签列表")
+    tags: List[str] = Field(default=[], description="项目标签列表")
     tasks_count: int = Field(0, description="任务数量")

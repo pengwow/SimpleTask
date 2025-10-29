@@ -6,6 +6,7 @@
 
 import os
 import sys
+import json
 import shutil
 import logging
 import threading
@@ -16,7 +17,7 @@ import requests
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-from app.db import get_db, Project, ProjectTag, ProjectToTag
+from app.db import get_db, Project
 # 导入工具函数
 from app.utils.tools import ensure_dir_exists
 
@@ -73,7 +74,8 @@ class ProjectManager:
                     git_password=git_password,
                     status='pending',
                     create_time=datetime.now(),
-                    update_time=datetime.now()
+                    update_time=datetime.now(),
+                    tags=json.dumps(tags or [])
                 )
                 db.add(project)
                 db.commit()
@@ -83,10 +85,6 @@ class ProjectManager:
                 raise e
             finally:
                 db.close()
-            
-            # 处理标签
-            if tags:
-                ProjectManager._add_tags_to_project(project.id, tags, db)
             
             # 启动导入线程
             threading.Thread(target=ProjectManager._import_project, args=(project.id,)).start()
@@ -138,16 +136,12 @@ class ProjectManager:
             if work_path is not None:
                 project.work_path = work_path
             
-            project.update_time = datetime.now()
-            db.commit()
-            
             # 更新标签
             if tags is not None:
-                # 删除现有标签关联
-                db.query(ProjectToTag).filter(ProjectToTag.project_id == project_id).delete()
-                db.commit()
-                # 添加新标签
-                ProjectManager._add_tags_to_project(project_id, tags, db)
+                project.tags = json.dumps(tags)
+            
+            project.update_time = datetime.now()
+            db.commit()
             
             return {'success': True, 'message': '项目更新成功'}
         except Exception as e:
@@ -225,28 +219,6 @@ class ProjectManager:
                     )
                 )
                 
-            # 标签过滤
-            if tags:
-                tag_ids = [tag.id for tag in db.query(ProjectTag).filter(ProjectTag.name.in_(tags)).all()]
-                if tag_ids:
-                    project_ids = [pt.project_id for pt in db.query(ProjectToTag).filter(ProjectToTag.tag_id.in_(tag_ids)).all()]
-                    if project_ids:
-                        query = query.filter(Project.id.in_(project_ids))
-                    else:
-                        # 如果没有匹配的项目，返回空结果
-                        return {
-                            'success': True,
-                            'data': {
-                                'projects': [],
-                                'pagination': {
-                                    'page': page,
-                                    'per_page': per_page,
-                                    'total': 0,
-                                    'pages': 0
-                                }
-                            }
-                        }
-                
             # 排序
             from sqlalchemy import desc
             query = query.order_by(desc(Project.update_time))
@@ -258,8 +230,14 @@ class ProjectManager:
             # 格式化结果
             result = []
             for project in projects:
-                # 获取项目标签
-                project_tags = [tag.name for tag in project.tags]
+                # 解析标签JSON字符串为列表
+                project_tags = json.loads(project.tags) if project.tags else []
+                
+                # 标签过滤
+                if tags:
+                    if not any(tag in project_tags for tag in tags):
+                        continue
+                
                 result.append({
                     'id': project.id,
                     'name': project.name,
@@ -308,8 +286,8 @@ class ProjectManager:
             if not project:
                 return {'success': False, 'message': '项目不存在'}
             
-            # 获取项目标签
-            project_tags = [tag.name for tag in project.tags]
+            # 解析标签JSON字符串为列表
+            project_tags = json.loads(project.tags) if project.tags else []
             
             # 获取项目文件列表（前100个文件）
             project_path = os.path.join(PROJECTS_ROOT, project.name)
@@ -333,13 +311,11 @@ class ProjectManager:
                 'source_type': project.source_type,
                 'source_url': project.source_url,
                 'branch': project.branch,
-                'git_username': project.git_username,
                 'status': project.status,
-                'error_message': project.error_message,
                 'create_time': project.create_time.strftime('%Y-%m-%d %H:%M:%S'),
                 'update_time': project.update_time.strftime('%Y-%m-%d %H:%M:%S'),
-                'tags': project_tags,
-                'files': files
+                'files': files,
+                'tags': project_tags
             }
             
             return {'success': True, 'data': result}
@@ -360,8 +336,19 @@ class ProjectManager:
         try:
             db = next(get_db())
             try:
-                tags = db.query(ProjectTag).order_by(ProjectTag.name).all()
-                return {'success': True, 'data': [{'id': tag.id, 'name': tag.name} for tag in tags]}
+                # 获取所有项目的标签
+                projects = db.query(Project).all()
+                tag_set = set()
+                
+                for project in projects:
+                    if project.tags:
+                        project_tags = json.loads(project.tags)
+                        tag_set.update(project_tags)
+                
+                # 转换为列表并排序
+                tags = sorted(list(tag_set))
+                # 构造返回格式
+                return {'success': True, 'data': [{'name': tag} for tag in tags]}
             finally:
                 db.close()
         except Exception as e:

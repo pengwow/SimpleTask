@@ -11,13 +11,7 @@ from sqlalchemy.sql import func
 from .database import Base
 
 
-# 项目和标签的多对多关联表
-project_to_tag = Table(
-    'project_to_tag',
-    Base.metadata,
-    Column('project_id', Integer, ForeignKey('projects.id', ondelete='CASCADE'), primary_key=True),
-    Column('tag_id', Integer, ForeignKey('project_tags.id', ondelete='CASCADE'), primary_key=True)
-)
+# 移除了项目和标签的多对多关联表，改为在Project模型中使用JSON格式存储标签列表
 
 
 class MirrorSource(Base):
@@ -83,18 +77,6 @@ class PythonVersion(Base):
     error_message = Column(Text, nullable=True)
 
 
-class ProjectTag(Base):
-    """项目标签模型"""
-    __tablename__ = "project_tags"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), unique=True, nullable=False, index=True)
-    create_time = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # 关系
-    projects = relationship("Project", secondary=project_to_tag, back_populates="tags")
-
-
 class Project(Base):
     """项目模型"""
     __tablename__ = "projects"
@@ -113,8 +95,10 @@ class Project(Base):
     create_time = Column(DateTime(timezone=True), server_default=func.now())
     update_time = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
+    # 存储为JSON格式的标签列表
+    tags = Column(Text, default='[]')
+    
     # 关系
-    tags = relationship("ProjectTag", secondary=project_to_tag, back_populates="projects")
     tasks = relationship("Task", back_populates="project")
 
 

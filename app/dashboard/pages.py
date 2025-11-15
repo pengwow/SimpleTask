@@ -133,12 +133,13 @@ class DashboardUI:
             ui.label('虚拟环境管理').classes('text-2xl font-bold')
             with ui.row():
                 ui.button('返回仪表板', on_click=lambda: ui.navigate.to('/dashboard'))
+        # 操作按钮
+        with ui.row().classes('w-full justify-between'):
+            ui.button('创建新环境', on_click=lambda: open_create_env_dialog())
         # 主内容区
         with ui.column().classes('w-full items-center gap-6 p-6'):
-            # 操作按钮
-            with ui.row().classes('w-full justify-between'):
-                ui.button('创建新环境', on_click=lambda: open_create_env_dialog())
-                # ui.input(placeholder='搜索环境...') # .bind_value_to(ui.query('#env-table'), 'options.q')
+
+            # ui.input(placeholder='搜索环境...') # .bind_value_to(ui.query('#env-table'), 'options.q')
             
             # 环境列表
             env_table = ui.table(
@@ -151,55 +152,150 @@ class DashboardUI:
                 ],
                 rows=[]
             ).classes('w-full')
+            env_table.add_slot('body-cell-actions', '''
+            <q-td key="actions" :props="props">
+                <q-btn flat dense round icon="edit" color="primary"
+                    @click="$parent.$emit('edit', props.row)" />
+                <q-btn flat dense round icon="delete" color="negative"
+                    @click="$parent.$emit('delete', props.row)" />
+            </q-td>
+            ''')
 
+            env_table.on('edit', lambda e: show_env_edit_dialog(e.args))
+            env_table.on('delete', lambda e: show_env_delete_dialog(e.args))
             
         
-        # # 创建环境对话框
-        # def open_create_env_dialog():
-        #     with ui.dialog() as dialog, ui.card():
-        #         ui.label('创建新虚拟环境').classes('text-xl font-bold mb-4')
-        #         with ui.column().classes('gap-4'):
-        #             name_input = ui.input(label='环境名称')
-        #             version_input = ui.input(label='Python版本')
-        #             with ui.row().classes('justify-end gap-2'):
-        #                 ui.button('取消', on_click=dialog.close)
-        #                 ui.button('创建', on_click=lambda: create_env(name_input.value, version_input.value, dialog))
+        # 创建环境对话框
+        def open_create_env_dialog():
+            with ui.dialog() as dialog, ui.card():
+                ui.label('创建新虚拟环境').classes('text-xl font-bold mb-4')
+                with ui.column().classes('gap-4'):
+                    name_input = ui.input(label='环境名称')
+                    version_input = ui.input(label='Python版本')
+                    with ui.row().classes('justify-end gap-2'):
+                        ui.button('取消', on_click=dialog.close)
+                        # ui.button('创建', on_click=lambda: ui.call(create_env, name_input.value, version_input.value, dialog))
         
-        # async def create_env(name: str, version: str, dialog):
-        #     if not name or not version:
-        #         ui.notify('请填写所有字段', type='negative')
-        #         return
-        #     # 这里应该调用API创建环境
-        #     ui.notify(f'创建环境: {name}', type='positive')
-        #     dialog.close()
-        #     # 刷新列表
-        #     await load_envs()
+        async def create_env(name: str, version: str, dialog):
+            """
+            创建新的虚拟环境
+            
+            Args:
+                name: 环境名称
+                version: Python版本
+                dialog: 对话框实例
+            """
+            if not name or not version:
+                ui.notify('请填写所有字段', type='negative')
+                return
+            
+            try:
+                # 调用API创建环境
+                response = await DashboardUI.fetch_api_data(
+                    '/api/envs', 
+                    method='POST',
+                    json={'name': name, 'python_version': version}
+                )
+                
+                if response.get('status') == 'success':
+                    ui.notify(f'创建环境: {name} 成功', type='positive')
+                    dialog.close()
+                    # 刷新环境列表
+                    await load_envs()
+                else:
+                    ui.notify(f'创建环境失败: {response.get("message", "未知错误")}', type='negative')
+            except Exception as e:
+                ui.notify(f'创建环境失败: {str(e)}', type='negative')
         
         # 加载环境列表
         async def load_envs():
             # 模拟数据
             envs = [
-                {'id': 1, 'name': 'env1', 'python_version': '3.9.10', 'status': 'active', 'actions': '操作按钮'}, 
-                {'id': 2, 'name': 'env2', 'python_version': '3.10.4', 'status': 'inactive', 'actions': '操作按钮'}
+                {'id': 1, 'name': 'env1', 'python_version': '3.9.10', 'status': 'active'}, 
+                {'id': 2, 'name': 'env2', 'python_version': '3.10.4', 'status': 'inactive'}
             ]
-            # 为每行添加操作按钮
-            for env in envs:
-                with ui.row() as buttons:
-                    ui.button('详情', on_click=lambda e=env: show_env_details(e))
-                    ui.button('删除', on_click=lambda e=env: delete_env(e['id']), color='red')
-                env['actions'] = buttons
+            # 设置表格行数据
             env_table.rows = envs
+            
+        # 为表格设置行渲染函数，使用插槽方式处理操作列
+        def render_actions(row_data):
+            with ui.row():
+                ui.button('详情', on_click=lambda e=row_data: ui.call(show_env_details, e))
+                ui.button('删除', on_click=lambda e=row_data: ui.call(delete_env, e['id']), color='red')
         
-        # async def show_env_details(env):
-        #     with ui.dialog() as dialog, ui.card():
-        #         ui.label(f'环境详情: {env["name"]}').classes('text-xl font-bold mb-4')
-        #         # 显示环境详情
-        #         dialog.open()
+        # 注册表格行渲染函数
+        # env_table.add_slot('body-cell-actions', lambda props: render_actions(props['row']))
         
-        # async def delete_env(env_id):
-        #     # 这里应该调用API删除环境
-        #     ui.notify(f'删除环境: {env_id}', type='negative')
-        #     await load_envs()
+        async def show_env_details(env):
+            """
+            显示环境详情
+            
+            Args:
+                env: 环境对象，包含环境的详细信息
+            """
+            with ui.dialog() as dialog, ui.card():
+                ui.label(f'环境详情: {env["name"]}').classes('text-xl font-bold mb-4')
+                
+                # 显示环境详细信息
+                with ui.column().classes('gap-2'):
+                    with ui.row().classes('justify-between'):
+                        ui.label('ID:')
+                        ui.label(str(env['id']))
+                    with ui.row().classes('justify-between'):
+                        ui.label('Python版本:')
+                        ui.label(env['python_version'])
+                    with ui.row().classes('justify-between'):
+                        ui.label('状态:')
+                        ui.label(env['status'])
+                
+                with ui.row().classes('justify-end mt-4'):
+                    ui.button('关闭', on_click=dialog.close)
+                
+                dialog.open()
+        
+        async def delete_env(env_id):
+            """
+            删除虚拟环境
+            
+            Args:
+                env_id: 环境ID
+            """
+            # 二次确认删除操作
+            with ui.dialog() as confirm_dialog, ui.card():
+                ui.label('确认删除').classes('text-xl font-bold mb-4')
+                ui.label(f'确定要删除ID为 {env_id} 的环境吗？此操作不可撤销。')
+                
+                with ui.row().classes('justify-end gap-2 mt-4'):
+                    ui.button('取消', on_click=confirm_dialog.close)
+                    ui.button('确认删除', on_click=lambda: ui.call(confirm_delete, env_id, confirm_dialog), color='red')
+                
+                confirm_dialog.open()
+        
+        async def confirm_delete(env_id, dialog):
+            """
+            确认删除环境的回调函数
+            
+            Args:
+                env_id: 环境ID
+                dialog: 确认对话框实例
+            """
+            try:
+                # 调用API删除环境
+                response = await DashboardUI.fetch_api_data(
+                    f'/api/envs/{env_id}', 
+                    method='DELETE'
+                )
+                
+                if response.get('status') == 'success':
+                    ui.notify(f'环境 {env_id} 删除成功', type='positive')
+                    await load_envs()
+                else:
+                    ui.notify(f'删除环境失败: {response.get("message", "未知错误")}', type='negative')
+                
+                dialog.close()
+            except Exception as e:
+                ui.notify(f'删除环境失败: {str(e)}', type='negative')
+                dialog.close()
         
         ui.timer(0.1, load_envs, once=True)
     
@@ -365,17 +461,117 @@ class DashboardUI:
             projects_table.on('edit', lambda e: show_project_edit_dialog(e.args))
             projects_table.on('delete', lambda e: show_project_delete_dialog(e.args))
 
+
         async def show_project_edit_dialog(project):
-            print(project)
-            with ui.dialog() as dialog, ui.card():
+            """
+            显示项目编辑对话框
+            参数:
+                project: 要编辑的项目对象
+            """
+            # 深拷贝项目对象，避免直接修改原数据
+            edit_project = dict(project)
+            # 确保标签数据正确初始化
+            if 'tags' not in edit_project:
+                edit_project['tags'] = []
+            elif isinstance(edit_project['tags'], str):
+                # 如果标签是字符串，分割成列表
+                edit_project['tags'] = [tag.strip() for tag in edit_project['tags'].split(',') if tag.strip()]
+            elif isinstance(edit_project['tags'], list) and edit_project['tags'] and isinstance(edit_project['tags'][0], dict):
+                # 如果标签是对象列表，提取名称
+                edit_project['tags'] = [tag.get('name', '') for tag in edit_project['tags']]
+            
+            # 添加项目来源相关字段
+            edit_project['source_type'] = edit_project.get('source_type', 'git')
+            edit_project['git_url'] = edit_project.get('git_url', '')
+            edit_project['git_branch'] = edit_project.get('git_branch', 'main')
+            edit_project['git_username'] = edit_project.get('git_username', '')
+            edit_project['git_password'] = edit_project.get('git_password', '')
+            edit_project['uploaded_file'] = edit_project.get('uploaded_file', '')
+            
+            # 创建对话框
+            with ui.dialog() as dialog, ui.card().classes('w-2/3 max-w-4xl p-4'):
                 ui.label('编辑项目').classes('text-xl font-bold mb-4')
-                with ui.column().classes('space-y-2'):
-                    ui.input('项目名称', value=project['name']).bind_value(project, 'name')
-                    ui.input('描述', value=project['description']).bind_value(project, 'description')
-                with ui.row().classes('justify-end'):
+                
+                # 使用滚动容器包裹表单内容
+                with ui.scroll_area().classes('max-h-[70vh] pr-4'):
+                    # 移除ui.form()，使用普通容器
+                    # 项目名称
+                    ui.label('项目名称 *').classes('text-sm font-medium')
+                    ui.input().classes('w-full').bind_value(edit_project, 'name')
+                    
+                    # 项目描述
+                    ui.label('项目描述').classes('text-sm font-medium')
+                    ui.textarea().classes('w-full h-24').bind_value(edit_project, 'description')
+                    
+                    # 工作路径
+                    ui.label('工作路径 *').classes('text-sm font-medium')
+                    ui.input().classes('w-full').bind_value(edit_project, 'work_path')
+                    
+                    # 标签输入
+                    ui.label('标签').classes('text-sm font-medium')
+                    ui.input_chips().bind_value(edit_project, 'tags')
+                    ui.label('输入标签后按Enter键添加').classes('text-xs text-gray-500 mt-1')
+                    
+                    # 项目来源选择
+                    ui.label('项目来源').classes('text-sm font-medium mt-4')
+                    # 创建tabs容器而不是列表
+                    with ui.tabs() as tabs:
+                        git_tab = ui.tab('git', label='Git仓库', icon='fork_left').classes('w-1/2 text-center')
+                        zip_tab = ui.tab('zip', label='ZIP上传', icon='folder_zip').classes('w-1/2 text-center')
+                    
+                    # 使用正确的tab_panels语法，绑定到source_type字段
+                    with ui.tab_panels(tabs, value=edit_project['source_type']).bind_value(edit_project, 'source_type').classes('w-full'):
+                        with ui.tab_panel('zip'):
+                            # ZIP上传区域
+                            with ui.card().classes('border-dashed border-2 border-gray-300 p-8 text-center rounded-lg'):
+                                ui.icon('upload').classes('text-4xl text-gray-400 mb-2')
+                                ui.label('拖拽ZIP文件到此，或点击选择').classes('mb-2')
+                                upload = ui.upload(on_upload=lambda e: handle_file_upload(e, edit_project))
+                                upload.props('accept=".zip" label="点击上传"')
+                                if edit_project['uploaded_file']:
+                                    ui.label(f'已选择文件: {edit_project["uploaded_file"]}').classes('text-green-600 mt-2')
+                        with ui.tab_panel('git'):
+                            ui.label('Git仓库地址 *').classes('text-sm font-medium')
+                            ui.input().classes('w-full').bind_value(edit_project, 'git_url')
+                    
+                            ui.label('分支').classes('text-sm font-medium')
+                            ui.input().classes('w-full').bind_value(edit_project, 'git_branch')
+                    
+                            ui.label('用户名').classes('text-sm font-medium')
+                            ui.input().classes('w-full').props('placeholder="Git用户名 (可选)"').bind_value(edit_project, 'git_username')
+                    
+                            ui.label('密码').classes('text-sm font-medium')
+                            ui.input(password=True).classes('w-full').props('placeholder="Git密码 (可选)"').bind_value(edit_project, 'git_password')
+                            ui.label('请输入Git仓库的访问凭证').classes('text-xs text-gray-500 mt-1')
+            
+                # 表单验证函数
+                def validate_form():
+                    """
+                    验证表单数据
+                    返回:
+                        bool: 验证是否通过
+                    """
+                    if not edit_project.get('name', '').strip():
+                        ui.notify('项目名称不能为空', type='warning')
+                        return False
+                    
+                    if not edit_project.get('work_path', '').strip():
+                        ui.notify('工作路径不能为空', type='warning')
+                        return False
+                    
+                    # 检查工作路径中是否包含中文字符
+                    if any('\u4e00' <= char <= '\u9fff' for char in edit_project.get('work_path', '')):
+                        ui.notify('工作路径不能包含中文字符', type='warning')
+                        return False
+                    
+                    return True
+                
+                # 操作按钮放在滚动容器外
+                with ui.row().classes('justify-end right-4 bottom-4'):
                     ui.button('取消', on_click=dialog.close)
-                    ui.button('保存', on_click=lambda: save_project_changes(project, dialog))
-                dialog.open()
+                    ui.button('保存', on_click=lambda: save_project_changes(edit_project, dialog) if validate_form() else None, color='primary')
+            
+            dialog.open()
 
         async def save_project_changes(project, dialog: ui.dialog):
             try:
@@ -391,10 +587,18 @@ class DashboardUI:
                     "git_password": project["git_password"] if project["source_type"] == "git" else None,
                     "tags": project.get("tags", [])  # 直接使用标签列表
                 }
-                
+
+
+
                 # 直接使用httpx.AsyncClient发送POST请求
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
+                    # response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
+                    if project.get('id'):
+                        # 更新项目
+                        response = await client.put(f"{API_BASE_URL}/projects/{project['id']}", json=project_data)
+                    else:
+                        # 创建项目
+                        response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
                     response.raise_for_status()
                     result = response.json()
                 
@@ -447,14 +651,6 @@ class DashboardUI:
                 'uploaded_file': None
             }
             
-            # 使用可绑定的引用来存储组件
-            class Ref:
-                def __init__(self):
-                    self.value = None
-            
-            tag_input_ref = Ref()
-            tags_container_ref = Ref()
-            source_area_ref = Ref()
             
             # 标签处理已经通过input_chips组件直接处理
             
@@ -584,11 +780,6 @@ class DashboardUI:
                 # update_source_area()
             dialog.open()
 
-        # async def project_delete_dialog(project, dialog):
-        #     # 这里应该调用API保存项目更改
-        #     ui.notify(f'保存项目: {project["name"]}', type='positive')
-        #     await load_projects()
-        #     dialog.close()
         
         # 加载项目列表
         async def load_projects():

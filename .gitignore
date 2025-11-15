@@ -76,3 +76,5 @@ coverage/
 # Package manager
 Pipfile.lock
 poetry.lock
+
+.nicegui/storage-*.json

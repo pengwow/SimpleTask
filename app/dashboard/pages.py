@@ -28,22 +28,39 @@ class DashboardUI:
     """仪表板UI类"""
     
     @staticmethod
-    async def fetch_api_data(endpoint: str) -> Dict[str, Any]:
+    async def fetch_api_data(endpoint: str, method: str = 'GET', json: dict = None) -> Dict[str, Any]:
         """获取API数据
         
         Args:
             endpoint: API端点
+            method: HTTP方法，默认为'GET'
+            json: 请求体数据，用于POST、PUT等方法
             
         Returns:
             API响应数据
         """
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{API_BASE_URL}{endpoint}")
+                url = f"{API_BASE_URL}{endpoint}"
+                
+                if method.upper() == 'GET':
+                    response = await client.get(url)
+                elif method.upper() == 'POST':
+                    response = await client.post(url, json=json)
+                elif method.upper() == 'PUT':
+                    response = await client.put(url, json=json)
+                elif method.upper() == 'DELETE':
+                    response = await client.delete(url)
+                else:
+                    raise ValueError(f"不支持的HTTP方法: {method}")
+                
                 response.raise_for_status()
-                return response.json()
+                # 处理可能的空响应
+                if response.text:
+                    return response.json()
+                return {}
         except Exception as e:
-            logger.error(f"获取API数据失败 ({endpoint}): {str(e)}")
+            logger.error(f"获取API数据失败 ({method} {endpoint}): {str(e)}")
             ui.notify(f"获取数据失败: {str(e)}", type='negative')
             return {}
     
@@ -174,7 +191,7 @@ class DashboardUI:
                     version_input = ui.input(label='Python版本')
                     with ui.row().classes('justify-end gap-2'):
                         ui.button('取消', on_click=dialog.close)
-                        # ui.button('创建', on_click=lambda: ui.call(create_env, name_input.value, version_input.value, dialog))
+                        ui.button('创建', on_click=lambda: ui.call(create_env, name_input.value, version_input.value, dialog))
         
         async def create_env(name: str, version: str, dialog):
             """
@@ -209,22 +226,29 @@ class DashboardUI:
         
         # 加载环境列表
         async def load_envs():
-            # 模拟数据
-            envs = [
-                {'id': 1, 'name': 'env1', 'python_version': '3.9.10', 'status': 'active'}, 
-                {'id': 2, 'name': 'env2', 'python_version': '3.10.4', 'status': 'inactive'}
-            ]
-            # 设置表格行数据
-            env_table.rows = envs
-            
-        # 为表格设置行渲染函数，使用插槽方式处理操作列
-        def render_actions(row_data):
-            with ui.row():
-                ui.button('详情', on_click=lambda e=row_data: ui.call(show_env_details, e))
-                ui.button('删除', on_click=lambda e=row_data: ui.call(delete_env, e['id']), color='red')
-        
-        # 注册表格行渲染函数
-        # env_table.add_slot('body-cell-actions', lambda props: render_actions(props['row']))
+            """
+            从API加载环境列表数据并更新表格
+            """
+            try:
+                # 调用API获取环境列表（默认使用GET方法）
+                response = await DashboardUI.fetch_api_data('/envs')
+                
+                if isinstance(response, dict) and response.get('status') == 'success':
+                    envs = response.get('data', [])
+                else:
+                    # 处理API直接返回列表的情况
+                    envs = response if isinstance(response, list) else []
+                
+                # 为每行数据添加actions字段（虽然实际渲染通过插槽完成）
+                for env in envs:
+                    env['actions'] = ''
+                
+                # 设置表格行数据
+                env_table.rows = envs
+            except Exception as e:
+                ui.notify(f'加载环境列表失败: {str(e)}', type='negative')
+                # 出错时使用空数据
+                env_table.rows = []
         
         async def show_env_details(env):
             """
@@ -296,6 +320,68 @@ class DashboardUI:
             except Exception as e:
                 ui.notify(f'删除环境失败: {str(e)}', type='negative')
                 dialog.close()
+        
+        async def show_env_edit_dialog(env):
+            """
+            显示环境编辑对话框
+            
+            Args:
+                env: 环境对象，包含环境的详细信息
+            """
+            with ui.dialog() as dialog, ui.card():
+                ui.label(f'编辑虚拟环境: {env["name"]}').classes('text-xl font-bold mb-4')
+                with ui.column().classes('gap-4'):
+                    # 创建可编辑的输入字段
+                    name_input = ui.input(label='环境名称', value=env['name'])
+                    version_input = ui.input(label='Python版本', value=env['python_version'])
+                    
+                    with ui.row().classes('justify-end gap-2'):
+                        ui.button('取消', on_click=dialog.close)
+                        ui.button('保存', on_click=lambda: ui.call(update_env, env['id'], name_input.value, version_input.value, dialog))
+                
+                dialog.open()
+        
+        async def update_env(env_id, name, version, dialog):
+            """
+            更新虚拟环境信息
+            
+            Args:
+                env_id: 环境ID
+                name: 环境名称
+                version: Python版本
+                dialog: 对话框实例
+            """
+            if not name or not version:
+                ui.notify('请填写所有字段', type='negative')
+                return
+            
+            try:
+                # 调用API更新环境
+                response = await DashboardUI.fetch_api_data(
+                    f'/api/envs/{env_id}',
+                    method='PUT',
+                    json={'name': name, 'python_version': version}
+                )
+                
+                if response.get('status') == 'success':
+                    ui.notify(f'更新环境: {name} 成功', type='positive')
+                    dialog.close()
+                    # 刷新环境列表
+                    await load_envs()
+                else:
+                    ui.notify(f'更新环境失败: {response.get("message", "未知错误")}', type='negative')
+            except Exception as e:
+                ui.notify(f'更新环境失败: {str(e)}', type='negative')
+        
+        async def show_env_delete_dialog(env):
+            """
+            显示环境删除确认对话框
+            
+            Args:
+                env: 环境对象
+            """
+            # 调用现有的delete_env函数
+            await delete_env(env['id'])
         
         ui.timer(0.1, load_envs, once=True)
     

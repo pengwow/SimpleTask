@@ -13,12 +13,13 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db, MirrorSource, PythonEnv, EnvLog, PythonVersion, Project, Task, TaskExecution, TaskLog
 from app.virtual_envs.env_manager import create_python_env
+from app.tasks.task_manager import task_manager
 from app.schemas import (
     MirrorSourceCreate, MirrorSourceUpdate, MirrorSourceResponse,
     PythonEnvCreate, PythonEnvUpdate, PythonEnvResponse, PythonEnvWithDetails,
     PythonVersionCreate, PythonVersionResponse, SetDefaultVersion,
     ProjectCreate, ProjectUpdate, ProjectResponse, ProjectWithDetails,
-    TaskCreate, TaskUpdate, TaskResponse, TaskWithDetails, TaskExecutionResponse, TaskExecutionWithDetails, TaskActionResponse,
+    TaskCreate, TaskUpdate, TaskResponse, TaskWithDetails, TaskExecutionResponse, TaskExecutionWithDetails, TaskActionResponse, TaskListResponse,
     EnvLogResponse, TaskLogResponse
 )
 
@@ -255,6 +256,11 @@ async def upload_project_file(
     Raises:
         HTTPException: 当项目不存在或文件类型错误时
     """
+    import os
+    import zipfile
+    import tempfile
+    from app.utils.tools import ensure_dir_exists
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -262,9 +268,51 @@ async def upload_project_file(
     if not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="只能上传ZIP文件")
     
-    # 这里应该添加文件保存和项目解压的逻辑
-    # 暂时返回成功信息
-    return {"message": "文件上传成功"}
+    # 创建项目目录
+    project_dir = os.path.join(os.getcwd(), 'projects', str(project_id))
+    ensure_dir_exists(project_dir)
+    
+    # 保存上传的ZIP文件
+    zip_file_path = os.path.join(tempfile.gettempdir(), f"project_{project_id}.zip")
+    with open(zip_file_path, "wb") as f:
+        f.write(await file.read())
+    
+    # 解压ZIP文件到项目目录
+    try:
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            # 获取ZIP文件中的根目录
+            zip_root = zip_ref.namelist()[0].split('/')[0] if zip_ref.namelist() else ''
+            
+            # 解压所有文件
+            zip_ref.extractall(project_dir)
+            
+            # 如果ZIP文件包含一个根目录，将所有文件移动到项目目录根
+            if zip_root and os.path.exists(os.path.join(project_dir, zip_root)):
+                root_dir = os.path.join(project_dir, zip_root)
+                for item in os.listdir(root_dir):
+                    item_path = os.path.join(root_dir, item)
+                    new_path = os.path.join(project_dir, item)
+                    # 如果目标文件已存在，删除它
+                    if os.path.exists(new_path):
+                        if os.path.isdir(new_path):
+                            import shutil
+                            shutil.rmtree(new_path)
+                        else:
+                            os.remove(new_path)
+                    # 移动文件
+                    os.rename(item_path, new_path)
+                # 删除空的根目录
+                os.rmdir(root_dir)
+    finally:
+        # 删除临时ZIP文件
+        if os.path.exists(zip_file_path):
+            os.remove(zip_file_path)
+    
+    # 更新项目状态
+    project.status = 'ready'
+    db.commit()
+    
+    return {"message": "文件上传成功", "project_dir": project_dir}
 
 @api_router.get("/projects/{project_id}/files/{file_path:path}")
 async def get_project_file(
@@ -285,13 +333,35 @@ async def get_project_file(
     Raises:
         HTTPException: 当项目或文件不存在时
     """
+    import os
+    
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # 这里应该添加实际读取文件的逻辑
-    # 暂时返回模拟数据
-    return {"content": "文件内容示例", "file_path": file_path}
+    # 构建文件完整路径
+    project_dir = os.path.join(os.getcwd(), 'projects', str(project_id))
+    file_full_path = os.path.join(project_dir, file_path)
+    
+    # 确保文件存在
+    if not os.path.exists(file_full_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    # 确保不是目录
+    if os.path.isdir(file_full_path):
+        raise HTTPException(status_code=400, detail="不能读取目录内容")
+    
+    # 读取文件内容
+    try:
+        with open(file_full_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return {"content": content, "file_path": file_path}
+    except UnicodeDecodeError:
+        # 如果是二进制文件，返回文件大小
+        file_size = os.path.getsize(file_full_path)
+        return {"message": "二进制文件，无法直接读取内容", "file_path": file_path, "file_size": file_size}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取文件失败: {str(e)}")
 
 # API接口定义 - 虚拟环境管理
 @api_router.get("/envs", response_model=List[PythonEnvResponse])
@@ -377,6 +447,7 @@ async def create_env(
 async def update_env(
     env_id: int,
     env_data: PythonEnvUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """更新Python虚拟环境
@@ -384,6 +455,7 @@ async def update_env(
     Args:
         env_id: 环境ID
         env_data: 环境更新数据
+        background_tasks: FastAPI后台任务
         db: 数据库会话
         
     Returns:
@@ -409,10 +481,52 @@ async def update_env(
     db.commit()
     db.refresh(env)
     
-    # 这里应该添加异步安装依赖包的逻辑
-    # 暂时直接返回更新后的环境信息
+    # 如果更新了依赖包，异步安装依赖包
+    if 'requirements' in update_data:
+        # 更新环境状态为安装中
+        env.status = 'updating'
+        db.commit()
+        db.refresh(env)
+        
+        # 使用后台任务异步安装依赖包
+        background_tasks.add_task(install_requirements_background, env_id, env.path, env.requirements)
     
     return env
+
+# 后台安装依赖包的函数
+def install_requirements_background(env_id, env_path, requirements):
+    """后台安装依赖包
+    
+    Args:
+        env_id: 环境ID
+        env_path: 虚拟环境路径
+        requirements: 依赖包列表
+    """
+    from app.utils.tools import install_requirements, get_active_mirror
+    from app.db import get_db, PythonEnv
+    
+    # 获取活跃的镜像源
+    mirror = get_active_mirror()
+    mirror_url = mirror.url if mirror else None
+    
+    # 安装依赖包
+    success = install_requirements(env_id, env_path, requirements, mirror_url)
+    
+    # 更新环境状态
+    db = next(get_db())
+    try:
+        env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
+        if env:
+            if success:
+                env.status = 'ready'
+            else:
+                env.status = 'failed'
+            db.commit()
+    except Exception as e:
+        logger.error(f"更新环境状态失败: {str(e)}")
+        db.rollback()
+    finally:
+        db.close()
 
 @api_router.delete("/envs/{env_id}", response_model=dict)
 async def delete_env(
@@ -560,6 +674,26 @@ async def get_mirrors(
     """
     mirrors = db.query(MirrorSource).all()
     return mirrors
+
+@api_router.get("/mirrors/active", response_model=MirrorSourceResponse)
+async def get_active_mirror_api(
+    db: Session = Depends(get_db)
+):
+    """获取当前活跃的镜像源
+    
+    Args:
+        db: 数据库会话
+        
+    Returns:
+        活跃镜像源信息
+        
+    Raises:
+        HTTPException: 当没有活跃的镜像源时
+    """
+    mirror = db.query(MirrorSource).filter(MirrorSource.is_active == True).first()
+    if not mirror:
+        raise HTTPException(status_code=404, detail="没有活跃的镜像源")
+    return mirror
 
 @api_router.get("/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
 async def get_mirror(
@@ -731,8 +865,6 @@ async def get_active_mirror_api(
         raise HTTPException(status_code=404, detail="没有活跃的镜像源")
     return mirror
 
-# FastAPI中数据库连接通过依赖注入管理，不需要Flask的before_request和after_request钩子
-# 数据库会话通过get_db依赖项自动管理打开和关闭
 
 # API接口定义 - Python版本管理
 @api_router.get("/python_versions", response_model=List[PythonVersionResponse])
@@ -953,7 +1085,7 @@ async def python_version_log_stream(
     return StreamingResponse(event_stream(), media_type='text/event-stream')
 
 # 任务管理相关的路由
-@api_router.get("/tasks", response_model=List[TaskWithDetails])
+@api_router.get("/tasks", response_model=TaskListResponse)
 async def get_tasks(
     page: int = Query(1, ge=1, description="页码"),
     per_page: int = Query(10, ge=1, le=100, description="每页数量"),
@@ -1002,9 +1134,31 @@ async def get_tasks(
     tasks = query.order_by(Task.create_time.desc()).offset(offset).limit(per_page).all()
     
     # 构建响应
+    task_with_details_list = []
+    for task in tasks:
+        # 构建TaskWithDetails对象
+        task_with_details = TaskWithDetails(
+            id=task.id,
+            name=task.name,
+            description=task.description,
+            project_id=task.project_id,
+            python_env_id=task.python_env_id,
+            command=task.command,
+            schedule_type=task.schedule_type,
+            schedule_config=task.schedule_config,
+            max_instances=task.max_instances,
+            is_active=task.is_active,
+            create_time=task.create_time,
+            update_time=task.update_time,
+            project_name=task.project.name if task.project else None,
+            python_env_name=task.python_env.name if task.python_env else "",
+            running_instances=0  # 暂时设置为0，实际应该查询数据库
+        )
+        task_with_details_list.append(task_with_details)
+    
     return {
         "success": True,
-        "data": tasks,
+        "data": task_with_details_list,
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1067,7 +1221,7 @@ async def create_task(
     
     return task
 
-@api_router.get("/tasks/<int:task_id>", response_model=TaskResponse)
+@api_router.get("/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1089,7 +1243,7 @@ async def get_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
 
-@api_router.put("/tasks/<int:task_id>", response_model=TaskResponse)
+@api_router.put("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: int,
     task_data: TaskUpdate,
@@ -1137,7 +1291,7 @@ async def update_task(
     db.refresh(task)
     return task
 
-@api_router.delete("/tasks/<int:task_id>")
+@api_router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1158,16 +1312,16 @@ async def delete_task(
         raise HTTPException(status_code=404, detail="任务不存在")
     
     # 检查是否有正在运行的任务实例
-    running_instances = db.query(TaskInstance).filter(
-        TaskInstance.task_id == task_id,
-        TaskInstance.status.in_(["running", "queued"])
+    running_instances = db.query(TaskExecution).filter(
+        TaskExecution.task_id == task_id,
+        TaskExecution.status.in_(["running", "queued"])
     ).count()
     
     if running_instances > 0:
         raise HTTPException(status_code=400, detail="有正在运行的任务实例，无法删除")
     
     # 删除相关的任务实例和日志
-    db.query(TaskInstance).filter(TaskInstance.task_id == task_id).delete()
+    db.query(TaskExecution).filter(TaskExecution.task_id == task_id).delete()
     
     # 删除任务
     db.delete(task)
@@ -1175,7 +1329,7 @@ async def delete_task(
     
     return {"success": True, "message": "任务删除成功"}
 
-@api_router.post("/tasks/<int:task_id>/start", response_model=TaskResponse)
+@api_router.post("/tasks/{task_id}/start", response_model=TaskResponse)
 async def start_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1201,9 +1355,9 @@ async def start_task(
         raise HTTPException(status_code=400, detail="任务未激活")
     
     # 检查是否达到最大实例数
-    running_instances = db.query(TaskInstance).filter(
-        TaskInstance.task_id == task_id,
-        TaskInstance.status.in_(['running', 'queued'])
+    running_instances = db.query(TaskExecution).filter(
+        TaskExecution.task_id == task_id,
+        TaskExecution.status.in_(['running', 'queued'])
     ).count()
     
     if running_instances >= task.max_instances:
@@ -1230,7 +1384,7 @@ async def start_task(
         logger.error(f'启动任务失败: {str(e)}')
         raise HTTPException(status_code=500, detail=f"启动任务失败: {str(e)}")
 
-@api_router.post("/tasks/<int:task_id>/pause", response_model=TaskResponse)
+@api_router.post("/tasks/{task_id}/pause", response_model=TaskResponse)
 async def pause_task(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1255,10 +1409,10 @@ async def pause_task(
     task.is_active = False
     
     # 尝试取消所有排队的任务实例
-    db.query(TaskInstance).filter(
-        TaskInstance.task_id == task_id,
-        TaskInstance.status == 'queued'
-    ).update({TaskInstance.status: 'cancelled'})
+    db.query(TaskExecution).filter(
+        TaskExecution.task_id == task_id,
+        TaskExecution.status == 'queued'
+    ).update({TaskExecution.status: 'cancelled'})
     
     try:
         db.commit()
@@ -1276,7 +1430,7 @@ async def pause_task(
         logger.error(f'暂停任务失败: {str(e)}')
         raise HTTPException(status_code=500, detail=f"暂停任务失败: {str(e)}")
 
-@api_router.get("/tasks/{task_id}/executions", response_model=List[TaskExecutionWithDetails])
+@api_router.get("/tasks/{task_id}/executions", response_model=dict)
 async def get_task_executions(
     task_id: int,
     page: int = Query(1, ge=1, description="页码"),
@@ -1325,7 +1479,7 @@ async def get_task_executions(
         "pages": (total + per_page - 1) // per_page
     }
 
-@api_router.get("/executions/{execution_id}/logs", response_model=TaskLogResponse)
+@api_router.get("/executions/{execution_id}/logs", response_model=dict)
 async def get_execution_logs(
     execution_id: int,
     page: int = Query(1, ge=1, description="页码"),
@@ -1381,7 +1535,7 @@ async def get_execution_logs(
         "total_pages": (total + per_page - 1) // per_page
     }
 
-@api_router.post("/executions/<int:execution_id>/terminate")
+@api_router.post("/executions/{execution_id}/terminate")
 async def terminate_execution(
     execution_id: int,
     db: Session = Depends(get_db)

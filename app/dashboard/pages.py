@@ -231,7 +231,7 @@ class DashboardUI:
             """
             try:
                 # 调用API获取环境列表（默认使用GET方法）
-                response = await DashboardUI.fetch_api_data('/envs')
+                response = await DashboardUI.fetch_api_data('/api/envs')
                 
                 if isinstance(response, dict) and response.get('status') == 'success':
                     envs = response.get('data', [])
@@ -422,7 +422,7 @@ class DashboardUI:
         async def load_tasks():
             try:
                 # 调用API接口获取任务数据
-                data = await DashboardUI.fetch_api_data('/tasks')
+                data = await DashboardUI.fetch_api_data('/api/tasks')
                 
                 # 处理API响应
                 tasks = []
@@ -678,13 +678,13 @@ class DashboardUI:
 
                 # 直接使用httpx.AsyncClient发送POST请求
                 async with httpx.AsyncClient() as client:
-                    # response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
+                    # response = await client.post(f"{API_BASE_URL}/api/projects", json=project_data)
                     if project.get('id'):
                         # 更新项目
-                        response = await client.put(f"{API_BASE_URL}/projects/{project['id']}", json=project_data)
+                        response = await client.put(f"{API_BASE_URL}/api/projects/{project['id']}", json=project_data)
                     else:
                         # 创建项目
-                        response = await client.post(f"{API_BASE_URL}/projects", json=project_data)
+                        response = await client.post(f"{API_BASE_URL}/api/projects", json=project_data)
                     response.raise_for_status()
                     result = response.json()
                 
@@ -870,7 +870,7 @@ class DashboardUI:
         # 加载项目列表
         async def load_projects():
             # 调用API接口获取真实项目数据
-            data = await DashboardUI.fetch_api_data('/projects')
+            data = await DashboardUI.fetch_api_data('/api/projects')
             
             # 处理API响应
             projects = []
@@ -980,14 +980,14 @@ class DashboardUI:
                 
                 # 调用API删除项目
                 async with httpx.AsyncClient() as client:
-                    response = await client.delete(f"{API_BASE_URL}/projects/{project_id}")
+                    response = await client.delete(f"{API_BASE_URL}/api/projects/{project_id}")
                     response.raise_for_status()
-                
-                # 删除成功，显示成功消息并重新加载项目列表
-                ui.notify(f'成功删除项目: {project.get("name", "")}', type='positive')
-                await load_projects()
-                dialog.close()
-                
+                    
+                    # 删除成功，显示成功消息并重新加载项目列表
+                    ui.notify(f'成功删除项目: {project.get("name", "")}', type='positive')
+                    await load_projects()
+                    dialog.close()
+                    
             except httpx.HTTPStatusError as e:
                 # 处理HTTP错误
                 error_detail = ""

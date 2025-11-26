@@ -78,3 +78,4 @@ Pipfile.lock
 poetry.lock
 
 .nicegui/storage-*.json
+.trae/

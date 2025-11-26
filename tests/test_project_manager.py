@@ -30,22 +30,39 @@ class TestProjectManager(unittest.TestCase):
         self.temp_projects_root = tempfile.mkdtemp()
         self.original_projects_root = PROJECTS_ROOT
         
+        # 导入模块以修改模块级别的PROJECTS_ROOT变量
+        import app.projects.project_manager as pm_module
         # 临时修改项目根目录
-        ProjectManager.PROJECTS_ROOT = self.temp_projects_root
+        pm_module.PROJECTS_ROOT = self.temp_projects_root
         
         # 确保临时目录存在
         ensure_dir_exists(self.temp_projects_root)
         
-        # 创建测试数据
-        self._create_test_data()
+        # 清理测试数据库，确保每次测试都在干净的环境中运行
+        self._clean_test_db()
     
     def tearDown(self):
         """测试后的清理工作"""
+        # 导入模块以恢复模块级别的PROJECTS_ROOT变量
+        import app.projects.project_manager as pm_module
         # 恢复原始项目根目录
-        ProjectManager.PROJECTS_ROOT = self.original_projects_root
+        pm_module.PROJECTS_ROOT = self.original_projects_root
         
         # 删除临时目录
         shutil.rmtree(self.temp_projects_root, ignore_errors=True)
+    
+    def _clean_test_db(self):
+        """清理测试数据库，删除所有项目记录"""
+        db = next(get_db())
+        try:
+            # 删除所有项目记录
+            db.query(Project).delete()
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print(f"清理测试数据库失败: {str(e)}")
+        finally:
+            db.close()
     
     def _create_test_data(self):
         """创建测试数据"""
@@ -118,15 +135,20 @@ class TestProjectManager(unittest.TestCase):
         self.assertTrue(update_result['success'])
         
         # 验证项目信息是否已更新
-        project = Project.get_by_id(project_id)
-        self.assertEqual(project.name, "updated_project")
-        self.assertEqual(project.description, "已更新的项目")
-        self.assertEqual(project.work_path, '/src')
-        
-        # 验证标签是否已更新 - 修改为检查JSON解析后的标签
-        project_tags = json.loads(project.tags)
-        self.assertIn("更新", project_tags)
-        self.assertIn("测试", project_tags)
+        db = next(self._get_db())
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            self.assertIsNotNone(project)
+            self.assertEqual(project.name, "updated_project")
+            self.assertEqual(project.description, "已更新的项目")
+            self.assertEqual(project.work_path, '/src')
+            
+            # 验证标签是否已更新 - 修改为检查JSON解析后的标签
+            project_tags = json.loads(project.tags)
+            self.assertIn("更新", project_tags)
+            self.assertIn("测试", project_tags)
+        finally:
+            db.close()
         
         print("✓ 更新项目功能测试通过")
     
@@ -159,8 +181,12 @@ class TestProjectManager(unittest.TestCase):
         self.assertTrue(delete_result['success'])
         
         # 验证项目是否已从数据库中删除
-        with self.assertRaises(Project.DoesNotExist):
-            Project.get_by_id(project_id)
+        db = next(self._get_db())
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            self.assertIsNone(project)
+        finally:
+            db.close()
         
         # 验证项目目录是否已删除
         self.assertFalse(os.path.exists(project_path))

@@ -27,7 +27,7 @@
 
 ## 技术栈
 
-- **后端框架**: Flask
+- **后端框架**: fastapi
 - **数据库**: SQLite3
 - **前端集成**: nicegui
 - **虚拟化**: Python venv

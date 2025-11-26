@@ -44,8 +44,9 @@ def create_python_env(env_id):
     参数:
         env_id: 环境ID
     """
-    db = SessionLocal()
     try:
+        # 使用get_db()获取数据库会话，确保会话管理正确
+        db = next(get_db())
         # 使用SQLAlchemy查询获取环境
         env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
         if not env:
@@ -110,33 +111,40 @@ def create_python_env(env_id):
             if env.requirements:
                 install_requirements(env_id, env_path, env.requirements)
                 
-            # 依赖包安装完成后更新状态
-            env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()  # 重新获取最新环境
+            # 依赖包安装完成后，重新获取数据库会话和环境对象
+            db = next(get_db())
+            env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
             if env:
                 env.status = 'ready'
                 env.update_time = datetime.now()
                 db.commit()
         else:
-            env.status = 'failed'
-            log_env(env_id, '虚拟环境创建失败', 'ERROR')
-        
-        env.update_time = datetime.now()
-        db.commit()
+            # 重新获取最新环境对象，避免更新过时的对象
+            env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
+            if env:
+                env.status = 'failed'
+                env.update_time = datetime.now()
+                db.commit()
+                log_env(env_id, '虚拟环境创建失败', 'ERROR')
         
     except Exception as e:
-        db.rollback()
+        if 'db' in locals():
+            db.rollback()
         logger.error(f"创建环境时出错: {str(e)}")
         try:
+            # 重新获取数据库会话来更新状态
+            db = next(get_db())
             env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
             if env:
                 env.status = 'failed'
                 env.update_time = datetime.now()
                 db.commit()
                 log_env(env_id, f'创建环境时出错: {str(e)}', 'ERROR')
-        except:
-            pass
+        except Exception as update_e:
+            logger.error(f"更新环境失败状态时出错: {str(update_e)}")
     finally:
-        db.close()
+        if 'db' in locals():
+            db.close()
     
     # 任务完成后，等待一段时间再清理队列
     time.sleep(30)

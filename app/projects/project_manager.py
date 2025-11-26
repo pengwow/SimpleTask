@@ -56,7 +56,7 @@ class ProjectManager:
         """
         try:
             # 检查项目名称是否已存在
-            db = get_db()
+            db = next(get_db())
             try:
                 existing_project = db.query(Project).filter(Project.name == name).first()
                 if existing_project:
@@ -109,7 +109,7 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            db = get_db()
+            db = next(get_db())
             # 获取项目
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
@@ -164,19 +164,20 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            db = get_db()
+            # 导入模块以获取当前的PROJECTS_ROOT值
+            import app.projects.project_manager as pm_module
+            db = next(get_db())
             # 获取项目
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return {'success': False, 'message': '项目不存在'}
             
             # 删除项目文件夹
-            project_path = os.path.join(PROJECTS_ROOT, project.name)
+            project_path = os.path.join(pm_module.PROJECTS_ROOT, project.name)
             if os.path.exists(project_path):
                 shutil.rmtree(project_path, ignore_errors=True)
             
-            # 删除项目记录和相关标签关联
-            db.query(ProjectToTag).filter(ProjectToTag.project_id == project_id).delete()
+            # 删除项目记录
             db.delete(project)
             db.commit()
             
@@ -205,7 +206,7 @@ class ProjectManager:
         """
         try:
             # 构建查询
-            db = get_db()
+            db = next(get_db())
             # 获取查询对象
             query = db.query(Project)
             
@@ -363,7 +364,7 @@ class ProjectManager:
             project_id: 项目ID
         """
         try:
-            db = get_db()
+            db = next(get_db())
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return
@@ -395,6 +396,7 @@ class ProjectManager:
             logger.error(error_msg)
             # 更新项目状态为失败
             try:
+                db = next(get_db())
                 project = db.query(Project).filter(Project.id == project_id).first()
                 if project:
                     project.status = 'failed'
@@ -463,19 +465,19 @@ class ProjectManager:
         返回:
             str: 检测到的工作路径
         """
-        # 检查是否只有一个Python文件
-        python_files = list(Path(project_path).glob('*.py'))
-        if len(python_files) == 1 and not list(Path(project_path).glob('[!_]*')):
-            return '/'  # 单文件情况
-        
-        # 检查是否有子目录包含Python文件
+        # 先检查是否有子目录包含Python文件
         subdirs = [d for d in os.listdir(project_path) if os.path.isdir(os.path.join(project_path, d))]
         for subdir in subdirs:
             subdir_path = os.path.join(project_path, subdir)
             if list(Path(subdir_path).glob('*.py')):
                 return f'/{subdir}'  # 子目录情况
         
-        return None
+        # 检查是否有根目录的Python文件
+        python_files = list(Path(project_path).glob('*.py'))
+        if len(python_files) >= 1:
+            return '/'  # 单文件情况
+        
+        return '/'  # 默认返回根目录
     
     @staticmethod
     def _add_tags_to_project(project_id, tags, db=None):
@@ -530,7 +532,7 @@ class ProjectManager:
             dict: 操作结果
         """
         try:
-            db = get_db()
+            db = next(get_db())
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return {'success': False, 'message': '项目不存在'}

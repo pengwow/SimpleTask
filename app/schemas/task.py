@@ -81,3 +81,13 @@ class TaskActionResponse(BaseModel):
     message: str = Field(..., description="操作消息")
     task_id: Optional[int] = Field(None, description="任务ID")
     execution_id: Optional[int] = Field(None, description="执行ID")
+
+
+class TaskListResponse(BaseModel):
+    """任务列表响应模型，包含分页信息"""
+    success: bool = Field(..., description="操作是否成功")
+    data: List[TaskWithDetails] = Field(..., description="任务列表")
+    total: int = Field(..., description="总记录数")
+    page: int = Field(..., description="当前页码")
+    per_page: int = Field(..., description="每页记录数")
+    total_pages: int = Field(..., description="总页数")

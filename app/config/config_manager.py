@@ -137,7 +137,7 @@ class ConfigManager:
             # 获取服务端口
             port = self.get_service_port()
             # 构建默认API基础URL
-            base_url = f'http://localhost:{port}/api'
+            base_url = f'http://localhost:{port}'
         
         return base_url
 

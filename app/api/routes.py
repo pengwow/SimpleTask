@@ -32,6 +32,15 @@ api_router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+# Python版本日志队列和锁
+import threading
+from queue import Queue
+python_version_log_queues = {}
+python_version_log_queues_lock = threading.Lock()
+
+# 导入PythonVersionManager
+from app.python_versions.version_manager import PythonVersionManager
+
 # 项目管理相关路由
 @api_router.get("/projects", response_model=List[ProjectWithDetails])
 async def get_projects(
@@ -289,20 +298,22 @@ async def upload_project_file(
             # 如果ZIP文件包含一个根目录，将所有文件移动到项目目录根
             if zip_root and os.path.exists(os.path.join(project_dir, zip_root)):
                 root_dir = os.path.join(project_dir, zip_root)
-                for item in os.listdir(root_dir):
-                    item_path = os.path.join(root_dir, item)
-                    new_path = os.path.join(project_dir, item)
-                    # 如果目标文件已存在，删除它
-                    if os.path.exists(new_path):
-                        if os.path.isdir(new_path):
-                            import shutil
-                            shutil.rmtree(new_path)
-                        else:
-                            os.remove(new_path)
-                    # 移动文件
-                    os.rename(item_path, new_path)
-                # 删除空的根目录
-                os.rmdir(root_dir)
+                # 检查root_dir是否为目录，避免NotADirectoryError
+                if os.path.isdir(root_dir):
+                    import shutil
+                    for item in os.listdir(root_dir):
+                        item_path = os.path.join(root_dir, item)
+                        new_path = os.path.join(project_dir, item)
+                        # 如果目标文件已存在，删除它
+                        if os.path.exists(new_path):
+                            if os.path.isdir(new_path):
+                                shutil.rmtree(new_path)
+                            else:
+                                os.remove(new_path)
+                        # 移动文件
+                        os.rename(item_path, new_path)
+                    # 删除空的根目录
+                    os.rmdir(root_dir)
     finally:
         # 删除临时ZIP文件
         if os.path.exists(zip_file_path):
@@ -642,16 +653,41 @@ async def log_stream(env_id: int, db: Session = Depends(get_db)):
             logger.error(f"获取历史日志失败: {str(e)}")
             yield f'data: [ERROR] 获取历史日志失败: {str(e)}\n\n'
         
-        # 这里应该添加实时日志队列逻辑
-        # 暂时返回一些模拟数据
-        for i in range(5):
-            data = {
-                "message": f"实时日志消息 {i}",
-                "type": "info",
-                "timestamp": datetime.now().isoformat()
-            }
-            yield f"data: {json.dumps(data)}\n\n"
-            await asyncio.sleep(1)
+        # 添加实时日志队列逻辑
+        from app.utils.tools import log_queues, log_queues_lock
+        
+        # 初始化日志队列
+        with log_queues_lock:
+            if env_id not in log_queues:
+                log_queues[env_id] = Queue(maxsize=1000)
+        
+        # 实时发送新日志
+        while True:
+            try:
+                with log_queues_lock:
+                    if env_id not in log_queues:
+                        break
+                    queue_ref = log_queues[env_id]
+                
+                try:
+                    log = queue_ref.get(timeout=1)
+                    yield f'data: {log}\n\n'
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    # 检查环境状态
+                    try:
+                        env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
+                        if env and env.status in ['ready', 'failed']:
+                            break
+                    except:
+                        break
+                    continue
+            except GeneratorExit:
+                break
+            except Exception as e:
+                logger.error(f"日志流出错: {str(e)}")
+                break
         
         # 发送结束信号
         yield 'data: [STREAM_END]\n\n'
@@ -1137,6 +1173,12 @@ async def get_tasks(
     task_with_details_list = []
     for task in tasks:
         # 构建TaskWithDetails对象
+        # 查询实际运行实例数
+        running_instances = db.query(TaskExecution).filter(
+            TaskExecution.task_id == task.id,
+            TaskExecution.status.in_(['running', 'queued'])
+        ).count()
+        
         task_with_details = TaskWithDetails(
             id=task.id,
             name=task.name,
@@ -1152,7 +1194,7 @@ async def get_tasks(
             update_time=task.update_time,
             project_name=task.project.name if task.project else None,
             python_env_name=task.python_env.name if task.python_env else "",
-            running_instances=0  # 暂时设置为0，实际应该查询数据库
+            running_instances=running_instances  # 查询数据库获取实际运行实例数
         )
         task_with_details_list.append(task_with_details)
     
@@ -1607,8 +1649,8 @@ async def get_task_running_instances(
     running_instances = db.query(TaskExecution).filter(
         TaskExecution.task_id == task_id,
         TaskExecution.status.in_(['running', 'queued'])
-    ).order_by(TaskExecution.created_at.desc()).all()
-    
+    ).order_by(TaskExecution.start_time.desc()).all()
+
     return {
         "success": True,
         "task_id": task_id,
@@ -1616,8 +1658,7 @@ async def get_task_running_instances(
             {
                 "id": instance.id,
                 "status": instance.status,
-                "created_at": instance.created_at,
-                "started_at": instance.started_at
+                "start_time": instance.start_time
             } for instance in running_instances
         ],
         "count": len(running_instances)

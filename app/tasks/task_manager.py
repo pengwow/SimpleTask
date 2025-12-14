@@ -141,7 +141,7 @@ class TaskManager:
         """
         try:
             # 构建查询
-            db = get_db()
+            db = next(get_db())
             try:
                 query = db.query(Task)
                 
@@ -280,7 +280,7 @@ class TaskManager:
         """
         try:
             # 获取任务
-            db = get_db()
+            db = next(get_db())
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 
@@ -342,7 +342,7 @@ class TaskManager:
         """
         try:
             # 获取任务
-            db = get_db()
+            db = next(get_db())
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 
@@ -382,7 +382,7 @@ class TaskManager:
         """
         try:
             # 获取任务
-            db = get_db()
+            db = next(get_db())
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 
@@ -398,7 +398,11 @@ class TaskManager:
                     return {'success': False, 'message': '调度器初始化失败'}
             
             # 先移除可能存在的任务
-            self.scheduler.remove_job(str(task_id))
+            try:
+                self.scheduler.remove_job(str(task_id))
+            except:
+                # 任务不存在，忽略
+                pass
             
             # 解析调度配置
             schedule_config = json.loads(task.schedule_config)
@@ -462,8 +466,13 @@ class TaskManager:
                     replace_existing=True
                 )
             
+            elif task.schedule_type == 'manual':
+                # 手动执行任务，不添加到调度器
+                self.execute_task(task_id)
+            
             # 更新任务状态
-            db = get_db()
+            db_gen = get_db()
+            db = next(db_gen)
             try:
                 db.query(Task).filter(Task.id == task_id).update({
                     'is_active': True,
@@ -494,7 +503,8 @@ class TaskManager:
         """
         try:
             # 获取任务
-            db = get_db()
+            db_gen = get_db()
+            db = next(db_gen)
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 

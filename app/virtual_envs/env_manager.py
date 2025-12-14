@@ -34,6 +34,8 @@ log_queues_lock = threading.Lock()
 # 导入数据库模型和会话
 from app.db.database import SessionLocal
 from app.db.models import MirrorSource, PythonEnv, EnvLog
+# 导入数据库会话
+from app.db import get_db
 # 导入工具函数
 from app.utils.tools import get_active_mirror, log_env, install_requirements
 

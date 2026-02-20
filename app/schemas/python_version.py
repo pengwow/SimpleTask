@@ -25,8 +25,9 @@ class PythonVersionResponse(PythonVersionBase):
     update_time: datetime = Field(..., description="更新时间")
     error_message: Optional[str] = Field(None, description="错误信息")
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class SetDefaultVersion(BaseModel):

@@ -12,6 +12,11 @@ from contextlib import asynccontextmanager
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
+# 提前导入nicegui并设置主题
+from nicegui import ui
+# 禁用暗色模式，强制使用亮色主题
+ui.dark_mode.value = False
+
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -33,9 +38,6 @@ from app.db.database import engine, Base
 
 # 导入路由
 from app.api.routes import api_router
-
-# 导入nicegui相关模块
-from nicegui import ui
 
 # 导入uvicorn用于运行服务
 import uvicorn
@@ -76,29 +78,32 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api")
 
 # 根路径
-@app.get("/")
-async def root():
-    """根路径"""
-    return {
-        "message": "Python虚拟环境管理系统API",
-        "version": "1.0.0",
-        "docs": "/docs"
-    }
+# @app.get("/")
+# async def root():
+#     """根路径"""
+#     return {
+#         "message": "Python虚拟环境管理系统API",
+#         "version": "1.0.0",
+#         "docs": "/docs"
+#     }
 
 # 初始化UI - 将NiceGUI与FastAPI应用集成
+# 禁用暗色模式，强制使用亮色主题
+ui.dark_mode.value = False
+
 # 注意：必须在创建FastAPI应用实例后再导入页面模块，以避免命名冲突
 from app.dashboard import pages
 
 ui.run_with(
     app,
-    mount_path='/gui',
+    mount_path='/',
     storage_secret='python_env_manager_secret_key',
 )
 if __name__ == "__main__":
     logger.info("启动Python虚拟环境管理服务...")
     logger.info("服务将在 http://localhost:5001 启动")
     logger.info("API文档地址: http://localhost:5001/docs")
-    logger.info("前端页面: http://localhost:5001/gui")
+    logger.info("前端页面: http://localhost:5001/")
     logger.info("按 Ctrl+C 停止服务")
 
     uvicorn.run(

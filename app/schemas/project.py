@@ -39,8 +39,9 @@ class ProjectResponse(ProjectBase):
     create_time: datetime = Field(..., description="创建时间")
     update_time: datetime = Field(..., description="更新时间")
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class ProjectWithDetails(ProjectResponse):

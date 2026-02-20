@@ -28,5 +28,6 @@ class MirrorSourceResponse(MirrorSourceBase):
     """镜像源响应模型"""
     id: int = Field(..., description="镜像源ID")
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }

@@ -5,10 +5,12 @@
 import json
 import logging
 import threading
+import asyncio
 from typing import List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db, MirrorSource, PythonEnv, EnvLog, PythonVersion, Project, Task, TaskExecution, TaskLog
@@ -40,6 +42,55 @@ python_version_log_queues_lock = threading.Lock()
 
 # 导入PythonVersionManager
 from app.python_versions.version_manager import PythonVersionManager
+
+# 仪表板统计
+@api_router.get("/dashboard/stats", response_model=dict)
+async def get_dashboard_stats(
+    db: Session = Depends(get_db)
+):
+    """获取仪表板统计数据"""
+    # 统计数据
+    env_count = db.query(PythonEnv).count()
+    project_count = db.query(Project).count()
+    active_task_count = db.query(Task).filter(Task.is_active == True).count()
+    
+    # 系统状态
+    system_status = "正常"
+    
+    # 最近活动
+    recent_activities = []
+    
+    # 获取最近的环境日志
+    env_logs = db.query(EnvLog).order_by(EnvLog.timestamp.desc()).limit(5).all()
+    for log in env_logs:
+        env_name = log.env.name if log.env else "未知环境"
+        recent_activities.append({
+            "time": log.timestamp.strftime("%Y-%m-%d %H:%M"),
+            "action": f"环境[{env_name}]: {log.message}",
+            "status": log.level
+        })
+        
+    # 获取最近的任务执行
+    executions = db.query(TaskExecution).order_by(TaskExecution.start_time.desc()).limit(5).all()
+    for exe in executions:
+        task_name = exe.task.name if exe.task else "未知任务"
+        recent_activities.append({
+            "time": exe.start_time.strftime("%Y-%m-%d %H:%M") if exe.start_time else datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "action": f"任务[{task_name}]执行",
+            "status": exe.status
+        })
+    
+    # 按时间倒序排序并取前10条
+    recent_activities.sort(key=lambda x: x['time'], reverse=True)
+    recent_activities = recent_activities[:10]
+    
+    return {
+        "env_count": env_count,
+        "task_count": active_task_count,
+        "project_count": project_count,
+        "system_status": system_status,
+        "recent_activities": recent_activities
+    }
 
 # 项目管理相关路由
 @api_router.get("/projects", response_model=List[ProjectWithDetails])
@@ -107,7 +158,7 @@ async def create_project(
         raise HTTPException(status_code=400, detail="项目名称已存在")
     
     # 创建项目数据字典，排除tags字段单独处理
-    project_dict = project_data.dict(exclude={'tags'})
+    project_dict = project_data.model_dump(exclude={'tags'})
     
     # 将tags列表转换为JSON字符串
     project_dict['tags'] = json.dumps(project_data.tags or [])
@@ -199,7 +250,7 @@ async def update_project(
             raise HTTPException(status_code=400, detail="项目名称已存在")
     
     # 更新项目信息
-    update_data = project_data.dict(exclude_unset=True)
+    update_data = project_data.model_dump(exclude_unset=True)
     
     # 处理tags字段
     tags = update_data.pop('tags', None)
@@ -567,7 +618,9 @@ async def delete_env(
         raise HTTPException(status_code=404, detail="环境不存在")
     
     # 检查是否有相关任务在使用此环境
-    # 这里应该添加实际检查逻辑
+    task_count = db.query(Task).filter(Task.python_env_id == env_id).count()
+    if task_count > 0:
+        raise HTTPException(status_code=400, detail=f"该环境正在被{task_count}个任务使用，无法删除")
     
     # 保存环境路径以便删除
     env_path = env.path
@@ -711,25 +764,7 @@ async def get_mirrors(
     mirrors = db.query(MirrorSource).all()
     return mirrors
 
-@api_router.get("/mirrors/active", response_model=MirrorSourceResponse)
-async def get_active_mirror_api(
-    db: Session = Depends(get_db)
-):
-    """获取当前活跃的镜像源
-    
-    Args:
-        db: 数据库会话
-        
-    Returns:
-        活跃镜像源信息
-        
-    Raises:
-        HTTPException: 当没有活跃的镜像源时
-    """
-    mirror = db.query(MirrorSource).filter(MirrorSource.is_active == True).first()
-    if not mirror:
-        raise HTTPException(status_code=404, detail="没有活跃的镜像源")
-    return mirror
+
 
 @api_router.get("/mirrors/{mirror_id}", response_model=MirrorSourceResponse)
 async def get_mirror(
@@ -779,7 +814,7 @@ async def create_mirror(
         raise HTTPException(status_code=400, detail="镜像源URL已存在")
     
     # 创建镜像源
-    new_mirror = MirrorSource(**mirror_data.dict())
+    new_mirror = MirrorSource(**mirror_data.model_dump())
     db.add(new_mirror)
     db.commit()
     db.refresh(new_mirror)
@@ -810,7 +845,7 @@ async def update_mirror(
         raise HTTPException(status_code=404, detail="镜像源不存在")
     
     # 更新字段
-    update_data = mirror_data.dict(exclude_unset=True)
+    update_data = mirror_data.model_dump(exclude_unset=True)
     
     # 检查名称冲突
     if 'name' in update_data and update_data['name'] != mirror.name:
@@ -881,7 +916,7 @@ async def delete_mirror(
     
     return {"message": "镜像源删除成功"}
 
-@api_router.get("/mirrors/active", response_model=MirrorSourceResponse)
+@api_router.get("/mirrors/active")
 async def get_active_mirror_api(
     db: Session = Depends(get_db)
 ):
@@ -896,10 +931,25 @@ async def get_active_mirror_api(
     Raises:
         HTTPException: 当没有活跃的镜像源时
     """
-    mirror = db.query(MirrorSource).filter(MirrorSource.is_active == True).first()
-    if not mirror:
-        raise HTTPException(status_code=404, detail="没有活跃的镜像源")
-    return mirror
+    try:
+        mirror = db.query(MirrorSource).filter(MirrorSource.is_active == True).first()
+        if not mirror:
+            raise HTTPException(status_code=404, detail="没有活跃的镜像源")
+        
+        # 直接返回字典，确保所有值都是基本类型
+        return {
+            "id": int(mirror.id),
+            "name": str(mirror.name),
+            "url": str(mirror.url),
+            "description": str(mirror.description) if mirror.description else None,
+            "is_active": bool(mirror.is_active)
+        }
+    except Exception as e:
+        # 捕获所有异常，返回详细错误信息
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"获取活跃镜像源失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取活跃镜像源失败: {str(e)}")
 
 
 # API接口定义 - Python版本管理
@@ -991,7 +1041,7 @@ async def add_python_version(
     
     return db_version
 
-@api_router.post("/python_versions/<int:version_id>/set_default", response_model=dict)
+@api_router.post("/python_versions/{version_id}/set_default", response_model=dict)
 async def set_default_python_version(
     version_id: int,
     db: Session = Depends(get_db)
@@ -1021,7 +1071,7 @@ async def set_default_python_version(
     
     return {"message": "默认Python版本设置成功"}
 
-@api_router.delete("/python_versions/<int:version_id>", response_model=dict)
+@api_router.delete("/python_versions/{version_id}", response_model=dict)
 async def delete_python_version(
     version_id: int,
     db: Session = Depends(get_db)
@@ -1056,7 +1106,7 @@ async def delete_python_version(
     
     return {"message": "Python版本删除成功"}
 
-@api_router.get("/python_versions/<int:version_id>/log_stream")
+@api_router.get("/python_versions/{version_id}/log_stream")
 async def python_version_log_stream(
     version_id: int,
     db: Session = Depends(get_db)
@@ -1336,39 +1386,54 @@ async def update_task(
 @api_router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: int,
+    force: bool = Query(False, description="是否强制删除，会终止运行中的任务实例"),
     db: Session = Depends(get_db)
 ):
     """删除任务
-    
+
     Args:
         task_id: 任务ID
+        force: 是否强制删除，如果为true会先终止运行中的任务实例
         db: 数据库会话
-        
+
     Returns:
         操作结果
-        
+
         HTTPException: 当任务不存在时
     """
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    
+
     # 检查是否有正在运行的任务实例
-    running_instances = db.query(TaskExecution).filter(
+    running_executions = db.query(TaskExecution).filter(
         TaskExecution.task_id == task_id,
         TaskExecution.status.in_(["running", "queued"])
-    ).count()
-    
-    if running_instances > 0:
-        raise HTTPException(status_code=400, detail="有正在运行的任务实例，无法删除")
-    
+    ).all()
+
+    if running_executions:
+        if not force:
+            raise HTTPException(status_code=400, detail="有正在运行的任务实例，无法删除")
+
+        # 强制删除：先终止所有运行中的实例
+        for execution in running_executions:
+            try:
+                result = task_manager.terminate_task_execution(execution.id)
+                if not result['success']:
+                    logger.warning(f"终止任务实例 {execution.id} 失败: {result.get('message')}")
+            except Exception as e:
+                logger.error(f"终止任务实例 {execution.id} 时发生错误: {str(e)}")
+
+        # 等待一小段时间确保进程被终止
+        await asyncio.sleep(1)
+
     # 删除相关的任务实例和日志
     db.query(TaskExecution).filter(TaskExecution.task_id == task_id).delete()
-    
+
     # 删除任务
     db.delete(task)
     db.commit()
-    
+
     return {"success": True, "message": "任务删除成功"}
 
 @api_router.post("/tasks/{task_id}/start", response_model=TaskResponse)
@@ -1408,7 +1473,8 @@ async def start_task(
     # 创建任务实例并启动
     try:
         # 更新任务状态
-        task.last_run_time = datetime.utcnow()
+        from datetime import UTC
+        task.last_run_time = datetime.now(UTC)
         db.commit()
         
         # 调用任务管理模块启动任务
@@ -1513,8 +1579,21 @@ async def get_task_executions(
     # 分页
     executions = query.order_by(TaskExecution.id.desc()).offset((page - 1) * per_page).limit(per_page).all()
     
+    # 将数据库模型转换为字典列表
+    executions_list = []
+    for execution in executions:
+        executions_list.append({
+            "id": execution.id,
+            "task_id": execution.task_id,
+            "start_time": execution.start_time,
+            "end_time": execution.end_time,
+            "status": execution.status,
+            "duration": execution.duration,
+            "error_message": execution.error_message
+        })
+    
     return {
-        "executions": executions,
+        "executions": executions_list,
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1567,10 +1646,21 @@ async def get_execution_logs(
     # 分页
     logs = query.order_by(TaskLog.timestamp.desc()).offset((page - 1) * per_page).limit(per_page).all()
     
+    # 将TaskLog对象转换为字典列表
+    logs_list = []
+    for log in logs:
+        logs_list.append({
+            "id": log.id,
+            "execution_id": log.execution_id,
+            "level": log.level,
+            "message": log.message,
+            "timestamp": log.timestamp
+        })
+    
     return {
         "success": True,
         "execution_id": execution_id,
-        "logs": logs,
+        "logs": logs_list,
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -1605,14 +1695,14 @@ async def terminate_execution(
     
     try:
         # 调用任务管理模块终止执行
-        result = task_manager.terminate_execution(execution_id)
+        result = task_manager.terminate_task_execution(execution_id)
         
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['message'])
         
         # 更新执行状态
-        execution.status = 'cancelled'
-        execution.end_time = datetime.utcnow()
+        execution.status = 'terminated'
+        execution.end_time = datetime.now()
         db.commit()
         
         return {"success": True, "message": "任务执行已成功终止"}
@@ -1664,7 +1754,7 @@ async def get_task_running_instances(
         "count": len(running_instances)
     }
 
-@api_router.get("/tasks/<int:task_id>/stats", response_model=dict)
+@api_router.get("/tasks/{task_id}/stats", response_model=dict)
 async def get_task_stats(
     task_id: int,
     db: Session = Depends(get_db)
@@ -1693,7 +1783,7 @@ async def get_task_stats(
     total_executions = executions.count()
     
     # 成功执行数
-    successful_executions = executions.filter(TaskExecution.status == 'success').count()
+    successful_executions = executions.filter(TaskExecution.status == 'completed').count()
     
     # 失败执行数
     failed_executions = executions.filter(TaskExecution.status == 'failed').count()
@@ -1702,7 +1792,7 @@ async def get_task_stats(
     running_executions = executions.filter(TaskExecution.status == 'running').count()
     
     # 最近执行记录
-    latest_execution = executions.order_by(TaskExecution.created_at.desc()).first()
+    latest_execution = executions.order_by(TaskExecution.start_time.desc()).first()
     
     # 成功率
     success_rate = (successful_executions / total_executions * 100) if total_executions > 0 else 0
@@ -1718,13 +1808,13 @@ async def get_task_stats(
         "latest_execution": {
             "id": latest_execution.id,
             "status": latest_execution.status,
-            "created_at": latest_execution.created_at,
-            "started_at": latest_execution.started_at,
+            "created_at": latest_execution.start_time,
+            "started_at": latest_execution.start_time,
             "end_time": latest_execution.end_time
         } if latest_execution else None
     }
 
-@api_router.get("/tasks/<int:task_id>/executions/<int:execution_id>/realtime_logs")
+@api_router.get("/tasks/{task_id}/executions/{execution_id}/realtime_logs")
 async def get_realtime_logs(
     task_id: int,
     execution_id: int,

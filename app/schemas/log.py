@@ -16,8 +16,9 @@ class EnvLogResponse(EnvLogBase):
     id: int = Field(..., description="日志ID")
     timestamp: datetime = Field(..., description="日志时间")
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class TaskLogBase(BaseModel):
@@ -32,8 +33,9 @@ class TaskLogResponse(TaskLogBase):
     id: int = Field(..., description="日志ID")
     timestamp: datetime = Field(..., description="日志时间")
     
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class LogQueryParams(BaseModel):

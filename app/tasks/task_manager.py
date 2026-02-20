@@ -521,7 +521,7 @@ class TaskManager:
                     pass  # 忽略任务不存在的异常
             
             # 更新任务状态
-            db = get_db()
+            db = next(get_db())
             try:
                 db.query(Task).filter(Task.id == task_id).update({
                     'is_active': False,
@@ -549,13 +549,18 @@ class TaskManager:
         """
         try:
             # 获取任务
-            db = get_db()
+            db_gen = get_db()
+            db = next(db_gen)
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 
                 if not task:
                     logger.error(f"执行任务失败: 任务不存在 ({task_id})")
                     return
+                
+                # 提前获取需要的属性
+                task_name = task.name
+                task_command = task.command
                 
                 # 创建执行记录
                 execution = TaskExecution(
@@ -573,8 +578,8 @@ class TaskManager:
                 db.close()
             
             # 记录开始日志
-            self._log_task_execution(execution.id, 'INFO', f'任务开始执行: {task.name}')
-            self._log_task_execution(execution.id, 'INFO', f'执行命令: {task.command}')
+            self._log_task_execution(execution.id, 'INFO', f'任务开始执行: {task_name}')
+            self._log_task_execution(execution.id, 'INFO', f'执行命令: {task_command}')
             
             # 启动执行线程
             thread = threading.Thread(
@@ -596,7 +601,8 @@ class TaskManager:
         """
         try:
             # 获取任务和执行记录
-            db = get_db()
+            db_gen = get_db()
+            db = next(db_gen)
             try:
                 task = db.query(Task).filter(Task.id == task_id).first()
                 execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
@@ -695,7 +701,7 @@ class TaskManager:
             end_time = datetime.now()
             duration = (end_time - execution.start_time).total_seconds()
             
-            db = get_db()
+            db = next(get_db())
             try:
                 db.query(TaskExecution).filter(TaskExecution.id == execution.id).update({
                     'end_time': end_time,
@@ -722,7 +728,7 @@ class TaskManager:
             
             # 更新执行记录
             try:
-                db = get_db()
+                db = next(get_db())
                 try:
                     execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
                     if execution:
@@ -759,7 +765,7 @@ class TaskManager:
         """
         try:
             # 获取执行记录，用于获取任务ID
-            db = get_db()
+            db = next(get_db())
             try:
                 execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
                 if not execution:
@@ -773,19 +779,22 @@ class TaskManager:
                     log = TaskLog(
                         execution_id=execution_id,
                         level=level,
-                        message=msg,
-                        create_time=datetime.now()
+                        message=msg
                     )
                     db.add(log)
                 db.commit()
+                
+                # 提前获取任务ID，避免后续访问时的会话绑定问题
+                task_id = execution.task_id
             except Exception as e:
                 db.rollback()
                 logger.error(f"保存日志失败: {str(e)}")
+                return
             finally:
                 db.close()
             
             # 添加到日志队列（用于实时日志查看）
-            log_queue_id = f"task_{execution.task.id}_{execution_id}"
+            log_queue_id = f"task_{task_id}_{execution_id}"
             with TASK_LOG_QUEUES_LOCK:
                 if log_queue_id in TASK_LOG_QUEUES:
                     timestamp = datetime.now().isoformat()
@@ -814,7 +823,7 @@ class TaskManager:
         """
         try:
             # 检查执行记录是否存在
-            db = get_db()
+            db = next(get_db())
             try:
                 execution = db.query(TaskExecution).filter(TaskExecution.id == execution_id).first()
                 if not execution:
@@ -858,7 +867,7 @@ class TaskManager:
             end_time = datetime.now()
             duration = (end_time - execution.start_time).total_seconds()
             
-            db = get_db()
+            db = next(get_db())
             try:
                 db.query(TaskExecution).filter(TaskExecution.id == execution_id).update({
                     'end_time': end_time,

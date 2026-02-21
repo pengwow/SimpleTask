@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import re
 from typing import List, Dict, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -229,6 +230,8 @@ class DashboardUI:
             ).classes('w-full')
             env_table.add_slot('body-cell-actions', '''
             <q-td key="actions" :props="props">
+                <q-btn flat dense round icon="visibility" color="info"
+                    @click="$parent.$emit('detail', props.row)" />
                 <q-btn flat dense round icon="edit" color="primary"
                     @click="$parent.$emit('edit', props.row)" />
                 <q-btn flat dense round icon="delete" color="negative"
@@ -236,42 +239,193 @@ class DashboardUI:
             </q-td>
             ''')
 
+            env_table.on('detail', lambda e: show_env_detail_dialog(e.args))
             env_table.on('edit', lambda e: show_env_edit_dialog(e.args))
             env_table.on('delete', lambda e: show_env_delete_dialog(e.args))
-            
-        
+
+            # 分页状态
+            current_page = 1
+            per_page = 10
+            total_pages = 1
+            total_envs = 0
+
+            # 分页控件 - 添加响应式设计
+            pagination_row = ui.row().classes('w-full justify-center mt-4 flex-wrap')
+            pagination_controls = None
+
+            # 更新分页控件
+            def update_pagination_controls():
+                nonlocal pagination_controls
+
+                # 清除现有的分页控件
+                pagination_row.clear()
+
+                with pagination_row:
+                    # 显示环境总数
+                    ui.label(f"共 {total_envs} 个环境").classes('mr-4')
+
+                    # 分页按钮
+                    with ui.row().classes('items-center'):
+                        # 上一页按钮
+                        prev_btn = ui.button('上一页', on_click=lambda: load_envs(current_page - 1)).props('flat')
+                        if current_page <= 1:
+                            prev_btn.disable()
+
+                        # 页码显示
+                        page_info = ui.label(f"{current_page} / {total_pages}").classes('mx-2')
+
+                        # 下一页按钮
+                        next_btn = ui.button('下一页', on_click=lambda: load_envs(current_page + 1)).props('flat')
+                        if current_page >= total_pages:
+                            next_btn.disable()
+
+                        # 每页显示数量选择
+                        ui.label("每页:").classes('ml-4 mr-1')
+                        ui.select({10: '10', 20: '20', 50: '50'},
+                                value=per_page,
+                                on_change=lambda e: change_per_page(e.value)).classes('w-20')
+
+            # 改变每页显示数量
+            async def change_per_page(new_per_page):
+                nonlocal per_page, current_page
+                per_page = new_per_page
+                current_page = 1  # 重置到第一页
+                await load_envs(current_page)
+
+            # 加载状态
+            loading_indicator = None
+
             # 创建环境对话框
-            def open_create_env_dialog():
-                with ui.dialog() as dialog, ui.card():
+            async def open_create_env_dialog():
+                """打开创建环境对话框"""
+                # 加载镜像源列表
+                mirrors = await load_mirror_sources()
+
+                with ui.dialog() as dialog, ui.card().classes('min-w-[500px] max-w-[700px]'):
                     ui.label('创建新虚拟环境').classes('text-xl font-bold mb-4')
-                    with ui.column().classes('gap-4'):
-                        name_input = ui.input(label='环境名称')
-                        version_input = ui.input(label='Python版本')
-                        with ui.row().classes('justify-end gap-2'):
-                            ui.button('取消', on_click=dialog.close)
-                            ui.button('创建', on_click=lambda: create_env(name_input.value, version_input.value, dialog))
-        
-            async def create_env(name: str, version: str, dialog):
+
+                    with ui.column().classes('gap-4 w-full'):
+                        # 环境名称（必填）
+                        name_input = ui.input(
+                            label='环境名称 *',
+                            placeholder='请输入环境名称，如：myenv'
+                        ).props('outlined').classes('w-full')
+
+                        # Python版本（必填，有默认值）
+                        version_input = ui.select(
+                            label='Python版本 *',
+                            options={
+                                '3.9.21': 'Python 3.9.21',
+                                '3.10.12': 'Python 3.10.12',
+                                '3.11.4': 'Python 3.11.4',
+                                '3.12.0': 'Python 3.12.0'
+                            },
+                            value='3.9.21'
+                        ).props('outlined').classes('w-full')
+
+                        # 镜像源选择（可选）
+                        mirror_options = {'0': '默认源'}
+                        for mirror in mirrors:
+                            mirror_id = str(mirror.get('id', ''))
+                            mirror_options[mirror_id] = mirror.get('name', '未知源')
+
+                        mirror_input = ui.select(
+                            label='镜像源',
+                            options=mirror_options,
+                            value='0'
+                        ).props('outlined').classes('w-full')
+
+                        # 依赖列表（可选）
+                        requirements_input = ui.textarea(
+                            label='依赖列表',
+                            placeholder='每行一个依赖包，如：\nnumpy==1.24.0\npandas>=2.0.0'
+                        ).props('outlined').classes('w-full')
+
+                        # 说明文字
+                        with ui.row().classes('w-full text-gray-500 text-sm'):
+                            ui.label('* 为必填字段').classes('text-red-500')
+
+                    with ui.row().classes('justify-end gap-2 mt-4'):
+                        ui.button('取消', on_click=dialog.close).props('flat')
+                        ui.button(
+                            '创建',
+                            on_click=lambda: create_env(
+                                name_input.value or '',
+                                version_input.value or '',
+                                str(mirror_input.value or '0'),
+                                requirements_input.value or '',
+                                dialog
+                            )
+                        ).props('unelevated color=primary')
+
+                    dialog.open()
+
+            async def load_mirror_sources():
+                """加载镜像源列表"""
+                try:
+                    response = await DashboardUI.fetch_api_data('/mirrors')
+                    if isinstance(response, list):
+                        return response
+                    elif isinstance(response, dict) and 'data' in response:
+                        return response.get('data', [])
+                    return []
+                except Exception as e:
+                    logger.error(f'加载镜像源列表失败: {str(e)}')
+                    return []
+
+            async def create_env(name: str, version: str, mirror_id_str: str, requirements: str, dialog):
                 """
                 创建新的虚拟环境
-                
+
                 Args:
                     name: 环境名称
                     version: Python版本
+                    mirror_id_str: 镜像源ID（字符串）
+                    requirements: 依赖列表
                     dialog: 对话框实例
                 """
-                if not name or not version:
-                    ui.notify('请填写所有字段', type='negative')
+                # 表单验证
+                if not name:
+                    ui.notify('请输入环境名称', type='negative')
                     return
-                
+
+                if not version:
+                    ui.notify('请选择Python版本', type='negative')
+                    return
+
+                # 验证环境名称格式
+                if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+                    ui.notify('环境名称只能包含字母、数字、下划线和横线', type='negative')
+                    return
+
+                # 验证环境名称长度
+                if len(name) > 100:
+                    ui.notify('环境名称不能超过100个字符', type='negative')
+                    return
+
                 try:
+                    # 构建请求数据
+                    data = {
+                        'name': name,
+                        'python_version': version
+                    }
+
+                    # 添加镜像源（如果不是默认源）
+                    mirror_id = int(mirror_id_str) if mirror_id_str else 0
+                    if mirror_id and mirror_id != 0:
+                        data['mirror_source_id'] = str(mirror_id)
+
+                    # 添加依赖列表
+                    if requirements and requirements.strip():
+                        data['requirements'] = requirements.strip()
+
                     # 调用API创建环境
                     response = await DashboardUI.fetch_api_data(
-                        '/envs', 
+                        '/envs',
                         method='POST',
-                        json={'name': name, 'python_version': version}
+                        json=data
                     )
-                    
+
                     if response.get('status') == 'success':
                         ui.notify(f'创建环境: {name} 成功', type='positive')
                         dialog.close()
@@ -281,97 +435,192 @@ class DashboardUI:
                         ui.notify(f'创建环境失败: {response.get("message", "未知错误")}', type='negative')
                 except Exception as e:
                     ui.notify(f'创建环境失败: {str(e)}', type='negative')
-        
+
             # 加载环境列表
-            async def load_envs():
+            async def load_envs(page_num=1):
                 """
                 从API加载环境列表数据并更新表格
+
+                Args:
+                    page_num: 页码，默认为1
                 """
+                nonlocal current_page, per_page, total_pages, total_envs, loading_indicator
+                current_page = page_num
+
+                # 显示加载指示器
+                if not loading_indicator:
+                    loading_indicator = ui.spinner(size='lg').classes('fixed top-1/2 left-1/2 z-50')
+                else:
+                    loading_indicator.visible = True
+
                 try:
-                    # 调用API获取环境列表（默认使用GET方法）
-                    response = await DashboardUI.fetch_api_data('/envs')
-                    
-                    if isinstance(response, dict) and response.get('status') == 'success':
+                    # 调用API获取环境列表（带分页参数）
+                    response = await DashboardUI.fetch_api_data(f'/envs?page={page_num}&per_page={per_page}')
+
+                    if isinstance(response, dict):
+                        # 处理分页响应
                         envs = response.get('data', [])
+                        total_envs = response.get('total', 0)
+                        total_pages = response.get('total_pages', 1)
+                        current_page = response.get('page', 1)
+                        per_page = response.get('per_page', 10)
                     else:
-                        # 处理API直接返回列表的情况
+                        # 处理API直接返回列表的情况（向后兼容）
                         envs = response if isinstance(response, list) else []
-                    
-                    # 为每行数据添加actions字段（虽然实际渲染通过插槽完成）
+                        total_envs = len(envs)
+                        total_pages = 1
+
+                    # 为每行数据添加actions字段和任务数量（虽然实际渲染通过插槽完成）
                     for env in envs:
                         env['actions'] = ''
-                    
+                        # 获取该环境的关联任务数量
+                        try:
+                            tasks_response = await DashboardUI.fetch_api_data(f'/tasks?env_id={env["id"]}')
+                            if isinstance(tasks_response, dict):
+                                env['task_count'] = tasks_response.get('total', 0)
+                            elif isinstance(tasks_response, list):
+                                env['task_count'] = len(tasks_response)
+                            else:
+                                env['task_count'] = 0
+                        except Exception:
+                            env['task_count'] = 0
+
                     # 设置表格行数据
                     env_table.rows = envs
+
+                    # 更新分页控件
+                    update_pagination_controls()
+
+                    if not envs:
+                        ui.notify('暂无环境数据', type='info')
+
                 except Exception as e:
                     ui.notify(f'加载环境列表失败: {str(e)}', type='negative')
                     # 出错时使用空数据
                     env_table.rows = []
+                    total_envs = 0
+                    total_pages = 1
+                finally:
+                    # 隐藏加载指示器
+                    if loading_indicator:
+                        loading_indicator.visible = False
         
-            async def show_env_details(env):
+            async def show_env_detail_dialog(env):
                 """
-                显示环境详情
-                
+                显示环境详情对话框
+
                 Args:
                     env: 环境对象，包含环境的详细信息
                 """
-                with ui.dialog() as dialog, ui.card():
+                with ui.dialog() as dialog, ui.card().classes('min-w-96'):
                     ui.label(f'环境详情: {env["name"]}').classes('text-xl font-bold mb-4')
-                    
+
                     # 显示环境详细信息
-                    with ui.column().classes('gap-2'):
-                        with ui.row().classes('justify-between'):
-                            ui.label('ID:')
-                            ui.label(str(env['id']))
-                        with ui.row().classes('justify-between'):
-                            ui.label('Python版本:')
-                            ui.label(env['python_version'])
-                        with ui.row().classes('justify-between'):
-                            ui.label('状态:')
-                            ui.label(env['status'])
-                    
-                    with ui.row().classes('justify-end mt-4'):
-                        ui.button('关闭', on_click=dialog.close)
-                    
+                    with ui.column().classes('gap-3 w-full'):
+                        # 基本信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('ID:').classes('font-medium text-gray-600')
+                            ui.label(str(env.get('id', 'N/A'))).classes('text-gray-800')
+
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('环境名称:').classes('font-medium text-gray-600')
+                            ui.label(env.get('name', 'N/A')).classes('text-gray-800')
+
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('Python版本:').classes('font-medium text-gray-600')
+                            ui.label(env.get('python_version', 'N/A')).classes('text-gray-800')
+
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('状态:').classes('font-medium text-gray-600')
+                            status = env.get('status', 'unknown')
+                            status_color = 'text-green-600' if status == 'ready' else 'text-yellow-600' if status == 'creating' else 'text-red-600'
+                            ui.label(status).classes(status_color)
+
+                        # 服务器真实路径（重要信息）
+                        with ui.column().classes('w-full border-b border-gray-200 pb-2'):
+                            ui.label('服务器路径:').classes('font-medium text-gray-600 mb-1')
+                            path = env.get('path', 'N/A')
+                            with ui.row().classes('w-full items-center gap-2'):
+                                ui.input(value=path).classes('flex-1 text-sm').props('outlined dense readonly')
+                                ui.button(icon='content_copy', on_click=lambda: ui.run_javascript(f'navigator.clipboard.writeText("{path}")')).props('flat dense').tooltip('复制路径')
+
+                        # 时间信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('创建时间:').classes('font-medium text-gray-600')
+                            create_time = env.get('create_time', 'N/A')
+                            ui.label(str(create_time)).classes('text-gray-800 text-sm')
+
+                        with ui.row().classes('w-full justify-between items-center'):
+                            ui.label('更新时间:').classes('font-medium text-gray-600')
+                            update_time = env.get('update_time', 'N/A')
+                            ui.label(str(update_time)).classes('text-gray-800 text-sm')
+
+                    with ui.row().classes('justify-end mt-6'):
+                        ui.button('关闭', on_click=dialog.close).props('flat')
+
                     dialog.open()
+
+            # 保留旧函数名以兼容其他调用
+            async def show_env_details(env):
+                """
+                显示环境详情（兼容旧调用）
+
+                Args:
+                    env: 环境对象，包含环境的详细信息
+                """
+                await show_env_detail_dialog(env)
             
             async def delete_env(env):
                 """
-                删除虚拟环境
-                
+                删除虚拟环境，显示确认对话框
+
                 Args:
                     env: 环境对象
                 """
+                # 检查是否有关联任务
+                has_tasks = env.get('task_count', 0) > 0
+
                 # 二次确认删除操作
                 with ui.dialog() as confirm_dialog, ui.card():
                     ui.label('确认删除').classes('text-xl font-bold mb-4')
                     ui.label(f'确定要删除环境 "{env["name"]}" (ID: {env["id"]}) 吗？此操作不可撤销。')
-                    
+
+                    # 如果有任务关联，显示警告和强制删除选项
+                    force_delete = ui.checkbox('强制删除（会同时删除关联的任务）').classes('mb-2 mt-2')
+                    if has_tasks:
+                        force_delete.set_value(True)
+                        ui.label(f'⚠️ 该环境有 {env["task_count"]} 个关联任务，强制删除将同时删除这些任务').classes('text-orange-500 text-sm mb-2')
+
                     with ui.row().classes('justify-end gap-2 mt-4'):
                         ui.button('取消', on_click=confirm_dialog.close)
-                        ui.button('确认删除', on_click=lambda: confirm_delete(env, confirm_dialog), color='red')
-                    
+                        ui.button('确认删除', on_click=lambda: confirm_delete(env, confirm_dialog, force_delete.value), color='red')
+
                     confirm_dialog.open()
-            
-            async def confirm_delete(env, dialog):
+
+            async def confirm_delete(env, dialog, force=False):
                 """
                 确认删除环境的回调函数
-                
+
                 Args:
                     env: 环境对象
                     dialog: 确认对话框实例
+                    force: 是否强制删除
                 """
                 try:
-                    logger.info(f"开始删除环境: {env['id']}")
-                    
-                    # 调用API删除环境
+                    logger.info(f"开始删除环境: {env['id']}, 强制删除: {force}")
+
+                    # 显示进度提示
+                    if force:
+                        ui.notify('正在删除关联的任务...', type='info')
+
+                    # 调用API删除环境，传入force参数
                     response = await DashboardUI.fetch_api_data(
-                        f'/envs/{env["id"]}', 
+                        f'/envs/{env["id"]}?force={str(force).lower()}',
                         method='DELETE'
                     )
-                    
+
                     logger.info(f"API删除响应: {response}")
-                    
+
                     # API返回格式为 {"message": "环境删除成功"}
                     if response and 'message' in response:
                         ui.notify(f'环境 "{env["name"]}" 删除成功', type='positive')
@@ -382,7 +631,7 @@ class DashboardUI:
                         error_msg = response.get('message', '未知错误') if isinstance(response, dict) else str(response)
                         ui.notify(f'删除环境失败: {error_msg}', type='negative')
                         dialog.close()
-                    
+
                 except Exception as e:
                     logger.error(f"删除环境异常: {str(e)}")
                     ui.notify(f'删除环境失败: {str(e)}', type='negative')
@@ -871,6 +1120,8 @@ class DashboardUI:
             ).classes('w-full')
             projects_table.add_slot('body-cell-actions', '''
             <q-td key="actions" :props="props">
+                <q-btn flat dense round icon="visibility" color="info"
+                    @click="$parent.$emit('detail', props.row)" />
                 <q-btn flat dense round icon="edit" color="primary"
                     @click="$parent.$emit('edit', props.row)" />
                 <q-btn flat dense round icon="delete" color="negative"
@@ -878,8 +1129,61 @@ class DashboardUI:
             </q-td>
             ''')
 
+            projects_table.on('detail', lambda e: show_project_detail_dialog(e.args))
             projects_table.on('edit', lambda e: show_project_edit_dialog(e.args))
             projects_table.on('delete', lambda e: show_project_delete_dialog(e.args))
+
+            # 分页状态
+            current_page = 1
+            per_page = 10
+            total_pages = 1
+            total_projects = 0
+
+            # 分页控件 - 添加响应式设计
+            pagination_row = ui.row().classes('w-full justify-center mt-4 flex-wrap')
+            pagination_controls = None
+
+            # 更新分页控件
+            def update_pagination_controls():
+                nonlocal pagination_controls
+
+                # 清除现有的分页控件
+                pagination_row.clear()
+
+                with pagination_row:
+                    # 显示项目总数
+                    ui.label(f"共 {total_projects} 个项目").classes('mr-4')
+
+                    # 分页按钮
+                    with ui.row().classes('items-center'):
+                        # 上一页按钮
+                        prev_btn = ui.button('上一页', on_click=lambda: load_projects(current_page - 1)).props('flat')
+                        if current_page <= 1:
+                            prev_btn.disable()
+
+                        # 页码显示
+                        page_info = ui.label(f"{current_page} / {total_pages}").classes('mx-2')
+
+                        # 下一页按钮
+                        next_btn = ui.button('下一页', on_click=lambda: load_projects(current_page + 1)).props('flat')
+                        if current_page >= total_pages:
+                            next_btn.disable()
+
+                        # 每页显示数量选择
+                        ui.label("每页:").classes('ml-4 mr-1')
+                        ui.select({10: '10', 20: '20', 50: '50'},
+                                value=per_page,
+                                on_change=lambda e: change_per_page(e.value)).classes('w-20')
+
+            # 改变每页显示数量
+            async def change_per_page(new_per_page):
+                nonlocal per_page, current_page
+                per_page = new_per_page
+                current_page = 1  # 重置到第一页
+                await load_projects(current_page)
+
+            # 加载状态
+            loading_indicator = None
 
 
             async def show_project_edit_dialog(project):
@@ -1175,79 +1479,187 @@ class DashboardUI:
 
             
             # 加载项目列表
-            async def load_projects():
-                # 调用API接口获取真实项目数据
-                data = await DashboardUI.fetch_api_data('/projects')
-                
-                # 处理API响应
-                projects = []
-                if isinstance(data, list):
-                    # 如果API直接返回项目列表
-                    projects = data
-                elif isinstance(data, dict) and 'data' in data:
-                    # 如果API返回包含data字段的对象
-                    if isinstance(data['data'], list):
-                        projects = data['data']
-                    elif 'projects' in data['data']:
-                        projects = data['data']['projects']
-                
-                # 为每行添加操作按钮并准备表格数据
-                table_data = []
-                for project in projects:
-                    # 准备表格行数据，正确处理标签数据
-                    tags = project.get('tags', [])
-                    # 将标签列表转换为逗号分隔的字符串
-                    tags_str = ''
-                    if isinstance(tags, list):
-                        if tags and isinstance(tags[0], dict):
-                            # 如果标签是对象列表
-                            tags_str = ', '.join([tag.get('name', '') for tag in tags])
-                        else:
-                            # 如果标签是字符串列表
-                            tags_str = ', '.join(tags)
-                    
-                    row_data = {
-                        'id': project.get('id', ''),
-                        'name': project.get('name', ''),
-                        'description': project.get('description', ''),
-                        'work_path': project.get('work_path', ''),
-                        'tags': tags_str,  # 使用处理后的标签字符串
-                        'tasks_count': project.get('tasks_count', ''),
-                    }
-                    table_data.append(row_data)
-                
-                # 更新表格数据
-                projects_table.rows = table_data
-                if not table_data:
-                    ui.notify('暂无项目数据', type='info')
+            async def load_projects(page_num=1):
+                """
+                加载项目列表数据
+
+                Args:
+                    page_num: 页码，默认为1
+                """
+                nonlocal current_page, per_page, total_pages, total_projects, loading_indicator
+                current_page = page_num
+
+                # 显示加载指示器
+                if not loading_indicator:
+                    loading_indicator = ui.spinner(size='lg').classes('fixed top-1/2 left-1/2 z-50')
+                else:
+                    loading_indicator.visible = True
+
+                try:
+                    # 调用API接口获取项目数据（带分页参数）
+                    data = await DashboardUI.fetch_api_data(f'/projects?page={page_num}&per_page={per_page}')
+
+                    # 处理API响应
+                    projects = []
+                    if isinstance(data, dict):
+                        # 处理分页响应
+                        projects = data.get('data', [])
+                        total_projects = data.get('total', 0)
+                        total_pages = data.get('total_pages', 1)
+                        current_page = data.get('page', 1)
+                        per_page = data.get('per_page', 10)
+                    elif isinstance(data, list):
+                        # 如果API直接返回项目列表（向后兼容）
+                        projects = data
+                        total_projects = len(data)
+                        total_pages = 1
+
+                    # 为每行添加操作按钮并准备表格数据
+                    table_data = []
+                    for project in projects:
+                        # 准备表格行数据，正确处理标签数据
+                        tags = project.get('tags', [])
+                        # 将标签列表转换为逗号分隔的字符串
+                        tags_str = ''
+                        if isinstance(tags, list):
+                            if tags and isinstance(tags[0], dict):
+                                # 如果标签是对象列表
+                                tags_str = ', '.join([tag.get('name', '') for tag in tags])
+                            else:
+                                # 如果标签是字符串列表
+                                tags_str = ', '.join(tags)
+
+                        row_data = {
+                            'id': project.get('id', ''),
+                            'name': project.get('name', ''),
+                            'description': project.get('description', ''),
+                            'work_path': project.get('work_path', ''),
+                            'tags': tags_str,  # 使用处理后的标签字符串
+                            'tasks_count': project.get('tasks_count', ''),
+                        }
+                        table_data.append(row_data)
+
+                    # 更新表格数据
+                    projects_table.rows = table_data
+
+                    # 更新分页控件
+                    update_pagination_controls()
+
+                    if not table_data:
+                        ui.notify('暂无项目数据', type='info')
+
+                except Exception as e:
+                    ui.notify(f'加载项目列表失败: {str(e)}', type='negative')
+                    # 出错时使用空数据
+                    projects_table.rows = []
+                    total_projects = 0
+                    total_pages = 1
+                finally:
+                    # 隐藏加载指示器
+                    if loading_indicator:
+                        loading_indicator.visible = False
             
-            async def show_project_details(project):
-                with ui.dialog() as dialog, ui.card():
-                    # 安全获取项目名称
-                    project_name = project.get('name', '未知项目')
-                    ui.label(f'项目详情: {project_name}').classes('text-xl font-bold mb-4')
-                    
+            async def show_project_detail_dialog(project):
+                """
+                显示项目详情对话框
+
+                Args:
+                    project: 项目对象，包含项目的详细信息
+                """
+                with ui.dialog() as dialog, ui.card().classes('min-w-[500px] max-w-[800px] max-h-[90vh] overflow-auto'):
+                    # 对话框标题
+                    ui.label(f'项目详情: {project.get("name", "未知项目")}').classes('text-xl font-bold mb-4')
+
                     # 显示项目详细信息
-                    with ui.column().classes('space-y-2'):
-                        ui.label(f'ID: {project.get("id", "")}')
-                        ui.label(f'描述: {project.get("description", "无描述")}')
-                        ui.label(f'状态: {project.get("status", "")}')
-                        ui.label(f'创建时间: {project.get("create_time", "")}')
-                        
-                        # 如果有标签信息，显示标签
+                    with ui.column().classes('gap-3 w-full'):
+                        # 基本信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('ID:').classes('font-medium text-gray-600')
+                            ui.label(str(project.get('id', 'N/A'))).classes('text-gray-800')
+
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('项目名称:').classes('font-medium text-gray-600')
+                            ui.label(project.get('name', 'N/A')).classes('text-gray-800')
+
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('描述:').classes('font-medium text-gray-600')
+                            ui.label(project.get('description', '无描述')).classes('text-gray-800 text-sm max-w-[400px] text-right')
+
+                        # 磁盘路径（重要信息，使用等宽字体）
+                        with ui.column().classes('w-full border-b border-gray-200 pb-2'):
+                            ui.label('工作目录:').classes('font-medium text-gray-600 mb-1')
+                            # 优先使用 full_path（完整路径），如果不存在则使用 work_path
+                            display_path = project.get('full_path') or project.get('work_path', 'N/A')
+                            with ui.row().classes('w-full items-center gap-2'):
+                                ui.input(value=display_path).classes('flex-1 text-sm font-mono').props('outlined dense readonly')
+                                ui.button(icon='content_copy', on_click=lambda: ui.run_javascript(f'navigator.clipboard.writeText("{display_path}")')).props('flat dense').tooltip('复制路径')
+
+                        # 源代码信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('源码类型:').classes('font-medium text-gray-600')
+                            source_type = project.get('source_type', 'N/A')
+                            ui.label(source_type).classes('text-gray-800')
+
+                        if project.get('source_url'):
+                            with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                                ui.label('源码地址:').classes('font-medium text-gray-600')
+                                ui.label(project.get('source_url', 'N/A')).classes('text-gray-800 text-sm max-w-[400px] text-right')
+
+                        if project.get('branch'):
+                            with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                                ui.label('分支:').classes('font-medium text-gray-600')
+                                ui.label(project.get('branch', 'N/A')).classes('text-gray-800')
+
+                        # 状态信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('状态:').classes('font-medium text-gray-600')
+                            status = project.get('status', 'unknown')
+                            status_color = 'text-green-600' if status == 'ready' else 'text-yellow-600' if status == 'creating' else 'text-red-600'
+                            ui.label(status).classes(status_color)
+
+                        # 标签信息
                         tags_info = ''
                         if 'tags' in project:
                             if isinstance(project['tags'], list):
                                 if project['tags'] and isinstance(project['tags'][0], dict):
-                                    # 标签是对象列表
                                     tags_info = ', '.join([tag.get('name', '') for tag in project['tags']])
                                 else:
-                                    # 标签是字符串列表
                                     tags_info = ', '.join(project['tags'])
                         if tags_info:
-                            ui.label(f'标签: {tags_info}')
-                    
+                            with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                                ui.label('标签:').classes('font-medium text-gray-600')
+                                ui.label(tags_info).classes('text-gray-800 text-sm')
+
+                        # 任务数量
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('关联任务数:').classes('font-medium text-gray-600')
+                            ui.label(str(project.get('tasks_count', 0))).classes('text-gray-800')
+
+                        # 时间信息
+                        with ui.row().classes('w-full justify-between items-center border-b border-gray-200 pb-2'):
+                            ui.label('创建时间:').classes('font-medium text-gray-600')
+                            create_time = project.get('create_time', 'N/A')
+                            ui.label(str(create_time)).classes('text-gray-800 text-sm')
+
+                        with ui.row().classes('w-full justify-between items-center'):
+                            ui.label('更新时间:').classes('font-medium text-gray-600')
+                            update_time = project.get('update_time', 'N/A')
+                            ui.label(str(update_time)).classes('text-gray-800 text-sm')
+
+                    with ui.row().classes('justify-end mt-6'):
+                        ui.button('关闭', on_click=dialog.close).props('flat')
+
                     dialog.open()
+
+            # 保留旧函数名以兼容其他调用
+            async def show_project_details(project):
+                """
+                显示项目详情（兼容旧调用）
+
+                Args:
+                    project: 项目对象，包含项目的详细信息
+                """
+                await show_project_detail_dialog(project)
             
             ui.timer(0.1, load_projects, once=True)
             

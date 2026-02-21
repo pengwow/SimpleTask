@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import asyncio
+import os
 from typing import List, Optional
 from datetime import datetime
 
@@ -93,47 +94,75 @@ async def get_dashboard_stats(
     }
 
 # 项目管理相关路由
-@api_router.get("/projects", response_model=List[ProjectWithDetails])
+@api_router.get("/projects")
 async def get_projects(
-    skip: int = Query(0, ge=0, description="跳过的记录数"),
-    limit: int = Query(100, ge=1, le=1000, description="返回的记录数"),
+    page: int = Query(1, ge=1, description="页码"),
+    per_page: int = Query(10, ge=1, le=100, description="每页数量"),
     db: Session = Depends(get_db)
 ):
-    """获取项目列表
-    
+    """获取项目列表（支持分页）
+
     Args:
-        skip: 跳过的记录数
-        limit: 返回的最大记录数
+        page: 页码，从1开始
+        per_page: 每页数量
         db: 数据库会话
-        
+
     Returns:
-        项目列表，包含详细信息
+        包含分页信息的项目列表
     """
-    projects = db.query(Project).offset(skip).limit(limit).all()
+    # 计算总数
+    total = db.query(Project).count()
+
+    # 计算总页数
+    total_pages = (total + per_page - 1) // per_page
+
+    # 计算偏移量
+    offset = (page - 1) * per_page
+
+    # 获取分页数据
+    projects = db.query(Project).offset(offset).limit(per_page).all()
+
+    # 构建响应数据
     result = []
     for project in projects:
         # 将JSON字符串转换为标签列表
         tags_list = json.loads(project.tags) if project.tags else []
-        
-        project_with_details = ProjectWithDetails(
-            id=project.id,
-            name=project.name,
-            description=project.description,
-            work_path=project.work_path,
-            source_type=project.source_type,
-            source_url=project.source_url,
-            branch=project.branch,
-            git_username=project.git_username,
-            git_password=project.git_password,
-            status=project.status,
-            error_message=project.error_message,
-            create_time=project.create_time,
-            update_time=project.update_time,
-            tags=tags_list,
-            tasks_count=len(project.tasks)
-        )
-        result.append(project_with_details)
-    return result
+
+        # 计算完整路径
+        # 如果 work_path 为 '/' 或空，则使用默认路径 PROJECTS_ROOT/project.name
+        from app.projects.project_manager import PROJECTS_ROOT
+        if project.work_path == '/' or not project.work_path:
+            full_path = os.path.join(PROJECTS_ROOT, project.name)
+        else:
+            full_path = project.work_path
+
+        project_dict = {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "work_path": project.work_path,
+            "full_path": full_path,  # 添加完整路径
+            "source_type": project.source_type,
+            "source_url": project.source_url,
+            "branch": project.branch,
+            "git_username": project.git_username,
+            "git_password": project.git_password,
+            "status": project.status,
+            "error_message": project.error_message,
+            "create_time": project.create_time.isoformat() if project.create_time else None,
+            "update_time": project.update_time.isoformat() if project.update_time else None,
+            "tags": tags_list,
+            "tasks_count": len(project.tasks)
+        }
+        result.append(project_dict)
+
+    return {
+        "data": result,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages
+    }
 
 @api_router.post("/projects", response_model=ProjectResponse)
 async def create_project(
@@ -426,20 +455,55 @@ async def get_project_file(
         raise HTTPException(status_code=500, detail=f"读取文件失败: {str(e)}")
 
 # API接口定义 - 虚拟环境管理
-@api_router.get("/envs", response_model=List[PythonEnvResponse])
+@api_router.get("/envs")
 async def get_envs(
+    page: int = Query(1, ge=1, description="页码"),
+    per_page: int = Query(10, ge=1, le=100, description="每页数量"),
     db: Session = Depends(get_db)
 ):
-    """获取所有虚拟环境列表
-    
+    """获取虚拟环境列表（支持分页）
+
     Args:
+        page: 页码，从1开始
+        per_page: 每页数量
         db: 数据库会话
-        
+
     Returns:
-        虚拟环境列表
+        包含分页信息的环境列表
     """
-    envs = db.query(PythonEnv).order_by(PythonEnv.create_time.desc()).all()
-    return envs
+    # 计算总数
+    total = db.query(PythonEnv).count()
+
+    # 计算总页数
+    total_pages = (total + per_page - 1) // per_page
+
+    # 计算偏移量
+    offset = (page - 1) * per_page
+
+    # 获取分页数据
+    envs = db.query(PythonEnv).order_by(PythonEnv.create_time.desc()).offset(offset).limit(per_page).all()
+
+    # 转换为字典列表
+    env_list = []
+    for env in envs:
+        env_dict = {
+            "id": env.id,
+            "name": env.name,
+            "python_version": env.python_version,
+            "path": env.path,
+            "status": env.status,
+            "create_time": env.create_time.isoformat() if env.create_time else None,
+            "update_time": env.update_time.isoformat() if env.update_time else None
+        }
+        env_list.append(env_dict)
+
+    return {
+        "data": env_list,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages
+    }
 
 @api_router.get("/envs/{env_id}", response_model=PythonEnvWithDetails)
 async def get_env(
@@ -593,63 +657,92 @@ def install_requirements_background(env_id, env_path, requirements):
 @api_router.delete("/envs/{env_id}", response_model=dict)
 async def delete_env(
     env_id: int,
+    force: bool = Query(False, description="是否强制删除，会同时删除关联的任务"),
     db: Session = Depends(get_db)
 ):
     """删除Python虚拟环境
-    
+
     Args:
         env_id: 环境ID
+        force: 是否强制删除，如果为true会同时删除关联的任务
         db: 数据库会话
-        
+
     Returns:
         删除成功信息
-        
+
     Raises:
         HTTPException: 当环境不存在时
     """
     import os
     import shutil
-    import logging
-    
-    logger = logging.getLogger(__name__)
-    
-    env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
-    if not env:
-        raise HTTPException(status_code=404, detail="环境不存在")
-    
-    # 检查是否有相关任务在使用此环境
-    task_count = db.query(Task).filter(Task.python_env_id == env_id).count()
-    if task_count > 0:
-        raise HTTPException(status_code=400, detail=f"该环境正在被{task_count}个任务使用，无法删除")
-    
-    # 保存环境路径以便删除
-    env_path = env.path
-    
-    # 实际删除虚拟环境文件的逻辑
-    if env_path and os.path.exists(env_path):
-        try:
-            # 删除虚拟环境目录
-            shutil.rmtree(env_path)
-            logger.info(f"成功删除虚拟环境文件: {env_path}")
-        except Exception as e:
-            logger.error(f"删除虚拟环境文件失败: {str(e)}")
-            # 即使文件删除失败，我们仍然继续删除数据库记录
-            # 但会在返回信息中说明
-            file_delete_error = str(e)
+
+    logger.info(f"开始删除虚拟环境，ID: {env_id}, 强制删除: {force}")
+
+    try:
+        env = db.query(PythonEnv).filter(PythonEnv.id == env_id).first()
+        if not env:
+            logger.warning(f"删除环境失败: 环境不存在，ID: {env_id}")
+            raise HTTPException(status_code=404, detail="环境不存在")
+
+        # 检查是否有相关任务在使用此环境
+        related_tasks = db.query(Task).filter(Task.python_env_id == env_id).all()
+        task_count = len(related_tasks)
+
+        if task_count > 0:
+            if not force:
+                logger.warning(f"删除环境失败: 环境正在被使用，ID: {env_id}, 任务数: {task_count}")
+                raise HTTPException(status_code=400, detail=f"该环境正在被{task_count}个任务使用，无法删除")
+
+            # 强制删除：先删除所有关联的任务
+            logger.info(f"强制删除环境，先删除关联的{task_count}个任务")
+            for task in related_tasks:
+                try:
+                    # 删除任务相关的执行记录
+                    db.query(TaskExecution).filter(TaskExecution.task_id == task.id).delete()
+                    # 删除任务
+                    db.delete(task)
+                    logger.info(f"已删除关联任务: {task.name} (ID: {task.id})")
+                except Exception as e:
+                    logger.error(f"删除关联任务失败: {task.name} (ID: {task.id}), 错误: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"删除关联任务失败: {str(e)}")
+
+        # 保存环境路径以便删除
+        env_path = env.path
+        logger.info(f"环境路径: {env_path}")
+
+        # 实际删除虚拟环境文件的逻辑
+        if env_path and os.path.exists(env_path):
+            try:
+                # 删除虚拟环境目录
+                shutil.rmtree(env_path)
+                logger.info(f"成功删除虚拟环境文件: {env_path}")
+            except Exception as e:
+                logger.error(f"删除虚拟环境文件失败: {env_path}, 错误: {str(e)}")
+                # 文件删除失败，抛出异常，不删除数据库记录
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"删除虚拟环境文件失败: {str(e)}"
+                )
         else:
-            file_delete_error = None
-    else:
-        file_delete_error = None
-    
-    # 删除数据库记录
-    db.delete(env)
-    db.commit()
-    
-    # 返回适当的消息
-    if file_delete_error:
-        return {"message": "环境数据库记录删除成功，但文件删除失败", "file_error": file_delete_error}
-    else:
+            logger.warning(f"环境路径不存在或为空: {env_path}")
+
+        # 文件删除成功，删除数据库记录
+        try:
+            db.delete(env)
+            db.commit()
+            logger.info(f"成功删除环境数据库记录，ID: {env_id}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"删除环境数据库记录失败，ID: {env_id}, 错误: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"删除环境数据库记录失败: {str(e)}")
+
         return {"message": "环境删除成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除环境时发生未知错误，ID: {env_id}, 错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除环境失败: {str(e)}")
 
 @api_router.get("/envs/{env_id}/logs", response_model=List[EnvLogResponse])
 async def get_env_logs(
